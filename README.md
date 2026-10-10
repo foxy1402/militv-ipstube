@@ -13,7 +13,7 @@ written from scratch; the only things taken from the factory firmware are
 | | |
 |---|---|
 | **CRYPTO** | live price, 24 h change and a scrolling 24-hour chart, any Binance USDT pair |
-| **CLOCK** | NTP time + weather with drawn condition icons |
+| **CLOCK** | NTP time + date + Open-Meteo weather (condition, temp, high/low) in a fixed inner frame |
 | **STOCK** | live quote, % change, market flag and a 1-month sparkline |
 | **Audio** | I2S tone engine for alerts, key clicks and a boot chime |
 | **Bluetooth LE** | live console over the Nordic UART Service (works with any BLE-UART app) |

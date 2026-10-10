@@ -44,6 +44,12 @@ class MiniTFT {
   void flush();     // push the dirty rect to the panel (no-op when clean)
   void flushAll();  // force a full-screen push
   bool hasFb() const { return fb != nullptr; }
+  // Read back a framebuffer pixel (debug/screen dumps). Returns 0 when there
+  // is no framebuffer or the point is off-screen.
+  uint16_t at(int x, int y) const {
+    if (!fb || x < 0 || y < 0 || x >= TFT_W || y >= TFT_H) return 0;
+    return fb[(size_t)y * TFT_W + x];
+  }
 
  private:
   void cmd(uint8_t c);

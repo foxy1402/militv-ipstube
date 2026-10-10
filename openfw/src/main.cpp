@@ -6,7 +6,7 @@
 //             chart.h (CH_INTERVAL/CH_N = 5 m x 288 = a full 24 h, matching
 //             the 24 h stats in the header).
 //   1 CLOCK   NTP clock (cfg.gmtOff) + Open-Meteo weather (cfg.lat/lon/city)
-//             with drawn condition icons. No key, free.
+//             as text (condition, temp, high/low). No key, free.
 //   2 STOCK   Yahoo Finance quote + daily sparkline (cfg.stock, e.g. spy.us
 //             for S&P500, aapl.us for Apple). Shows MARKET CLOSED outside
 //             hours; data is the last close.
@@ -617,7 +617,7 @@ static void runCommand(const char *line, char *resp, size_t respN, bool fromBle)
   if (!*line) return;
 
   if (!strcmp(line, "help")) {
-    ok("cmds: help app next prev status px ticker batt 'batt scan' fs beep quiet bright portal quit");
+    ok("cmds: help app next prev status px ticker fb batt 'batt scan' fs beep quiet bright portal quit");
   } else if (!strncmp(line, "app", 3)) {
     const char *a = line + 3;
     while (*a == ' ') a++;
@@ -683,6 +683,34 @@ static void runCommand(const char *line, char *resp, size_t respN, bool fromBle)
     appEntered = false;
     enterApp(APP_CRYPTO);
     snprintf(resp, respN, "ticker -> %s", cfg.ticker);
+  } else if (!strncmp(line, "fb", 2)) {
+    // ASCII dump of a framebuffer region: "fb [x0 y0 x1 y1]" (default the
+    // whole screen). Prints one char per pixel — '#' lit, '.' black — so the
+    // rendered layout can be checked over serial instead of by eye on glass.
+    // Handy when the panel is behind a bezel or the text is clipped.
+    if (!tft.hasFb()) {
+      ok("no framebuffer (direct mode)");
+      return;
+    }
+    int x0 = 0, y0 = 0, x1 = TFT_W - 1, y1 = TFT_H - 1;
+    sscanf(line + 2, "%d %d %d %d", &x0, &y0, &x1, &y1);
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > TFT_W - 1) x1 = TFT_W - 1;
+    if (y1 > TFT_H - 1) y1 = TFT_H - 1;
+    Serial.printf("[fb] %d,%d..%d,%d\n", x0, y0, x1, y1);
+    // Column ruler every 10 px so a row can be located without counting.
+    Serial.print("     ");
+    for (int x = x0; x <= x1; x++) Serial.print((x % 10 == 0) ? ('0' + (x / 10) % 10) : ' ');
+    Serial.println();
+    char row[TFT_W + 1];
+    for (int y = y0; y <= y1; y++) {
+      int n = 0;
+      for (int x = x0; x <= x1; x++) row[n++] = tft.at(x, y) ? '#' : '.';
+      row[n] = 0;
+      Serial.printf("%3d  %s\n", y, row);
+    }
+    ok("fb dumped above");
   } else if (!strcmp(line, "batt")) {
     batteryStatus(resp, respN);
   } else if (!strcmp(line, "batt scan")) {

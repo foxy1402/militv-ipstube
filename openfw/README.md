@@ -21,7 +21,7 @@ is remembered across reboots.
 | App | What it shows | Free data source |
 |-----|---------------|------------------|
 | **CRYPTO** | live price + 24 h change + a scrolling **24-hour** chart (5 m candles), any Binance USDT pair | Binance public WebSocket + REST (no key) |
-| **CLOCK** | NTP time, date, weather with drawn condition icons, high/low, city | NTP pools + Open-Meteo (no key) |
+| **CLOCK** | NTP time, date, city, weather condition + temp + high/low — text only, laid out in a fixed inner frame | NTP pools + Open-Meteo (no key) |
 | **STOCK** | live quote, % change, market-open flag, ~1 month daily sparkline | Yahoo Finance chart API (no key) |
 
 ## New in this version: the rest of the hardware
@@ -63,6 +63,8 @@ app crypto|clock|stock   switch app
 next | prev          cycle apps
 ticker <PAIR>        switch the crypto pair at runtime (e.g. ticker ETHUSDT)
 px                   print the chart's axis + live price (what it draws)
+fb [x0 y0 x1 y1]     ASCII-dump the framebuffer region (default full screen):
+                     '#' lit, '.' black — check a layout without reading the glass
 status               one-line telemetry (app, WS, WiFi, battery)
 batt                 battery voltage / percent
 batt scan            sample every ADC1 channel (battery calibration aid)
@@ -192,6 +194,15 @@ drawing:
 2. **Never draw from a callback on another task** (the WebSocket library runs
    its own task). Post a flag and drain it in `loop()` — see `cryptoDrainWs()`.
    The BLE and audio modules follow the same rule.
+3. **Keep text inside x40..299 and erase the whole slot.** The bezel covers
+   x<40 and the glued frame covers x>300, and all three apps put their content
+   inside a shared inner frame (`FX`/`FR` in `clockapp.cpp`, `CH_X0/CH_X1` in
+   `chart.h`). Truncate every string to its slot width before drawing, and give
+   every field an erase box that spans its entire slot — a partial-redraw field
+   that erases less than it draws leaves fragments behind when a value shrinks
+   (a stray half-erased "NG" from the clock's loading message is what users saw
+   as a phantom "IG"). `fb` on the console dumps the framebuffer as ASCII if
+   you need to check what is really on the glass.
 
 ### Changing the crypto chart window
 

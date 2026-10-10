@@ -7,10 +7,14 @@
 // fetch inside the tap handler.
 // Weather: Open-Meteo forecast API, free, no key: current temp + weathercode
 // + daily high/low for cfg.lat/lon. Refresh every 10 min (60 s after a
-// failure). Weathercode -> icon drawn with line/rect primitives.
-// Drawing: one full layout per entry, then partial repaints — each field
-// erases + rewrites only when its text changes, so steady content costs zero
-// pixels (no blink). No "CLOCK" header: the time is the title.
+// failure). The weathercode becomes a text condition; there is no drawn icon
+// (the hand-drawn glyphs were inaccurate and their erase box chewed through
+// neighbouring text).
+// Drawing: one full layout per entry, then partial repaints — each field owns
+// a fixed row band inside the x40..299 safe frame and erases + rewrites only
+// when its text changes, so steady content costs zero pixels (no blink) and a
+// value can never leave fragments or run under the bezel/frame.
+// No "CLOCK" header: the time is the title.
 #pragma once
 #include <Arduino.h>
 

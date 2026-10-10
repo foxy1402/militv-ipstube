@@ -1,0 +1,59 @@
+# ============================================================
+#  MiliTV open firmware — repository ignore rules
+# ============================================================
+# Goal: publish the clean-room firmware, keep device-private and
+# vendor-proprietary material local. Root-anchored patterns ("/x") apply to the
+# repository root only, so openfw/** is never caught by accident.
+
+# ---- 1. Device-private data (NEVER publish) ----
+# The 16 MB flash dump contains the owner's NVS: WiFi SSID + password, BLE name
+# and the device MAC. The extracted filesystem came out of that same dump.
+/flash_dump/
+/bin/
+/*.bin
+/*.elf
+/*.core
+/sha256.txt
+/boot_log.txt
+/crash_window.txt
+/ctx_b0560.bin
+
+# ---- 2. Reverse-engineering artifacts (keep local) ----
+# These are dumped/decompiled bodies of the VENDOR'S firmware. Fine as private
+# research notes; republishing them in a public repo would be redistributing
+# proprietary code, which defeats the point of a clean-room project.
+# The shipped firmware contains none of it — only hardware facts (GPIO numbers,
+# register tables, one BLE UUID), cited in openfw/include/pins.h.
+#
+# Root-level analysis dumps and helper sources:
+/*.txt
+/*.c
+/*.json
+# Ghidra helper scripts (generated analysis tooling):
+/scripts/
+# third-party USB-serial driver downloads (not ours to redistribute):
+/drivers/
+
+# Analysis write-ups that ARE ours and SHOULD ship:
+!/ANALYSIS.md
+
+# ---- 3. Development scaffolding (kept on disk, not published) ----
+# Superseded mains, the pin-probe sweep and its log. Useful locally as the only
+# record of the bring-up path, but they are not part of the firmware and would
+# just make the repo look unfinished.
+/openfw/src/main_v1_bringup.bak.cpp.txt
+/openfw/src/main_v2_buttons.bak.cpp.txt
+/openfw/gpio_dump_draft.bak.cpp.txt
+/openfw/include/probe_cfg.h
+/openfw/replay.bat
+/openfw/replay_log.txt
+/openfw/replay_probes.py
+
+# ---- 4. Tooling / editor noise ----
+# Editor- and tool-specific config stays local: contributors may use anything.
+/.zcode/
+/.zcodeignore
+/.vscode/
+/.idea/
+*.log
+__pycache__/

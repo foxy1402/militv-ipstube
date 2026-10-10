@@ -1,0 +1,15 @@
+# PlatformIO / build output
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+
+# ESP tooling artifacts
+*.bin
+*.elf
+*.map
+!data/**
+
+# But NEVER the reverse-engineering artifacts or flash dumps: those are big,
+# device-specific, and may contain the user's WiFi credentials / MAC.
+# (The repo root keeps its own exclusions; see the top-level .gitignore.)

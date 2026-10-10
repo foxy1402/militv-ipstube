@@ -1,0 +1,24 @@
+# MiliTV (IPSTube) partition table — mirrors the FACTORY layout exactly.
+#
+# The open firmware never wrote a partition table (we only ever flash
+# firmware.bin into app0 @ 0x10000), so the device still carries the stock
+# table. This file matches it byte-for-byte in geometry, which matters because
+# the compile-time partition view must agree with what the on-device bootloader
+# will actually use. (The previous config used PlatformIO's huge_app.csv, which
+# declared a 3 MB app0 and a 896 KB spiffs at 0x310000 — that spiffs overlapped
+# the real app1 slot, so any LittleFS use would have scribbled over OTA space.)
+#
+# What this layout unlocks that the firmware previously ignored:
+#   app1   0x290000  2.5 MB  — a second app slot: OTA updates (no USB reflash)
+#   spiffs 0x510000 11.1 MB  — LittleFS: fonts, icons, sounds, community assets
+#                               (stock filled it with album art + boot anims)
+#
+# Verified against flash_dump/full_flash_16MB.bin: the table at 0x8000 decodes
+# to exactly these offsets/sizes.
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x280000,
+app1,     app,  ota_1,   0x290000, 0x280000,
+spiffs,   data, spiffs,  0x510000, 0xae0000,
+coredump, data, coredump,0xff0000, 0x10000,

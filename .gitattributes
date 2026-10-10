@@ -1,0 +1,16 @@
+# Normalize line endings so the repo looks the same on every platform.
+# Source and docs are checked in with LF; Windows checkouts get CRLF locally.
+* text=auto eol=lf
+
+# Binary-ish assets must never be line-ending converted.
+*.bin binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pcm binary
+*.mp3 binary
+*.ico binary
+
+# Windows scripts keep CRLF.
+*.bat text eol=crlf

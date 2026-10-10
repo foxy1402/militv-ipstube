@@ -10,6 +10,13 @@ static MiniTFT *st = nullptr;
 void stockBind(MiniTFT *tft) { st = tft; }
 
 #define ST_N 60
+// Refresh cadence. Trading is only 6.5 h x 5 days (~19% of the week), so a
+// flat 60 s poll spent ~81% of its requests re-fetching a price that could not
+// have moved, all weekend included. Poll fast while the market is open, slowly
+// while it is closed (a closed quote still needs an occasional refresh so the
+// panel picks up the next session's open).
+#define ST_OPEN_MS 60000UL     // 60 s while trading
+#define ST_CLOSED_MS 900000UL  // 15 min while closed
 static float hist[ST_N];
 static int histN = 0;
 static float quote = 0, prevClose = 0;
@@ -17,6 +24,7 @@ static bool haveQuote = false, haveHist = false;
 static bool marketOpen = false;
 static bool fetchFailed = false;
 static uint32_t lastQ = 0;
+static uint32_t nextDelayMs = ST_OPEN_MS;  // cadence chosen by the last fetch
 static char symUp[16] = "";
 static char footBuf[48] = "";
 // Partial-redraw memory: what is currently on screen, so steady values cost
@@ -47,17 +55,59 @@ static void upperSym() {
   yahooSym(symUp, sizeof(symUp));
 }
 
+// ---- market hours -----------------------------------------------------------
+// Yahoo's `meta.currentTradingPeriod.regular.{start,end}` is a UTC epoch window,
+// but the old check compared it against `regularMarketTime` — the LAST TRADE
+// time. After the closing bell that timestamp is pinned exactly at `end`, so
+// `mt <= end` stayed true through the evening and the whole weekend and the
+// panel read "OPEN" on a Saturday. Comparing the window against the CURRENT
+// time is what "is the market open" actually means.
+//
+// The current time comes from the response's own `Date` header, so the stock
+// app needs no NTP (only the clock app configures it). Parsed without
+// timegm()/strptime(), which the newlib here does not reliably expose.
+
+// Days since 1970-01-01 for a proleptic-Gregorian date (m is 1-based).
+// Howard Hinnant's days_from_civil; integer-only, valid well past 2100.
+static long daysFromCivil(int y, int m, int d) {
+  y -= (m <= 2) ? 1 : 0;
+  long era = (y >= 0 ? y : y - 399) / 400;
+  long yoe = y - era * 400;
+  long doy = (153L * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + doe - 719468;
+}
+
+// "Sat, 10 Oct 2026 04:23:00 GMT" -> epoch seconds, 0 if unparseable.
+static long parseHttpDate(const char *s) {
+  static const char *kMon[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  const char *p = strchr(s, ',');
+  if (!p) return 0;
+  int d = 0, y = 0, hh = 0, mm = 0, ss = 0;
+  char mon[4] = {0};
+  if (sscanf(p + 1, " %d %3s %d %d:%d:%d", &d, mon, &y, &hh, &mm, &ss) != 6) return 0;
+  int mi = -1;
+  for (int i = 0; i < 12; i++)
+    if (!strncmp(mon, kMon[i], 3)) { mi = i; break; }
+  if (mi < 0 || y < 2000 || y > 2200) return 0;
+  return daysFromCivil(y, mi + 1, d) * 86400L + hh * 3600L + mm * 60L + ss;
+}
+
 // Single Yahoo chart call -> quote + history + market-hours flag.
 // Probed 2026-10-09: HTTP 200, ~3.6 KB, no key, fields regularMarketPrice /
 // chartPreviousClose / currentTradingPeriod.regular.{start,end} /
 // regularMarketTime / indicators.quote[0].close[] all present.
 static void fetchAll() {
   if (WiFi.status() != WL_CONNECTED) return;
+  // Attempt-stamped FIRST so every early return below leaves the lane stamped:
+  // stamping only on success made a failing fetch retry on every loop pass.
+  lastQ = millis();
+  fetchFailed = false;
   char ysym[16], url[128];
   yahooSym(ysym, sizeof(ysym));
   snprintf(url, sizeof(url), "https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=1d&range=1mo",
            ysym);
-  fetchFailed = false;
   WiFiClientSecure cli;
   cli.setInsecure();  // personal use: skip CA bundle
   cli.setTimeout(4000);  // fail fast: a dead fetch must not eat the tap window
@@ -68,6 +118,10 @@ static void fetchAll() {
     fetchFailed = true;
     return;
   }
+  // Collect the Date header: it is the server's clock, which dates the session
+  // window below without depending on NTP.
+  static const char *kHdrs[] = {"Date"};
+  http.collectHeaders(kHdrs, 1);
   int code = http.GET();
   if (code != 200) {
     Serial.printf("[stock] %s HTTP %d\n", ysym, code);
@@ -75,6 +129,7 @@ static void fetchAll() {
     fetchFailed = true;
     return;
   }
+  long serverNow = parseHttpDate(http.header("Date").c_str());
   static JsonDocument filter;
   static bool filterInit = false;
   if (!filterInit) {
@@ -110,12 +165,21 @@ static void fetchAll() {
   quote = price;
   prevClose = (pcl > 0) ? pcl : price;
   haveQuote = true;
-  // Market-hours from the server's own clock: regularMarketTime inside the
-  // regular session => OPEN. Self-contained, no NTP dependency.
-  long mt = res["meta"]["regularMarketTime"] | 0;
+  // Market hours: the session window vs the SERVER's clock (Date header).
+  // Falls back to the old last-trade comparison only if the header was missing,
+  // in which case a closed market may still read OPEN — but at least the
+  // fetch cadence below stays sane.
   long rs = res["meta"]["currentTradingPeriod"]["regular"]["start"] | 0;
   long re = res["meta"]["currentTradingPeriod"]["regular"]["end"] | 0;
-  marketOpen = (rs > 0 && re > 0 && mt >= rs && mt <= re);
+  long mt = res["meta"]["regularMarketTime"] | 0;
+  if (rs > 0 && re > 0) {
+    long ref = (serverNow > 0) ? serverNow : mt;
+    marketOpen = (ref >= rs && ref <= re);
+  } else {
+    marketOpen = false;
+  }
+  // Keep the next-fetch delay to hand to the caller's cadence logic.
+  nextDelayMs = marketOpen ? ST_OPEN_MS : ST_CLOSED_MS;
   int total = 0;
   JsonArrayConst closes = res["indicators"]["quote"][0]["close"].as<JsonArrayConst>();
   for (JsonVariantConst c : closes)
@@ -130,10 +194,9 @@ static void fetchAll() {
     if (histN < ST_N) hist[histN++] = v;
   }
   haveHist = histN >= 5;
-  lastQ = millis();
   upperSym();
-  Serial.printf("[stock] %s quote=%.2f prev=%.2f hist=%d %s\n", ysym, quote, prevClose, histN,
-                marketOpen ? "OPEN" : "CLOSED");
+  Serial.printf("[stock] %s quote=%.2f prev=%.2f hist=%d %s (next in %lus)\n", ysym, quote,
+                prevClose, histN, marketOpen ? "OPEN" : "CLOSED", nextDelayMs / 1000UL);
 }
 
 // Left-aligned field at fixed x: erase-then-write only when changed.
@@ -252,9 +315,18 @@ void stockExit() {}
 void stockPump() {
   if (WiFi.status() != WL_CONNECTED) return;
   uint32_t now = millis();
-  // First pump after entering (or every 60 s): one request refreshes both
-  // quote and history.
-  if ((!haveQuote && !fetchFailed) || (now - lastQ > 60000UL)) {
+  // First pump after entering (lastQ == 0), then on the cadence the last fetch
+  // chose: 60 s while the market is open, 15 min while it is closed, and 60 s
+  // after a failure so a transient error recovers promptly.
+  //
+  // Keyed off the ATTEMPT stamp only. The old guard was
+  //   (!haveQuote && !fetchFailed) || (now - lastQ > 60000)
+  // and lastQ was stamped only on success: once lastQ went stale and a fetch
+  // failed, the second clause was already true, so it refetched on EVERY loop
+  // pass (thousands of requests/hour against Yahoo). Stamping at attempt time
+  // in fetchAll() and dropping the state clause here fixes it.
+  bool due = (lastQ == 0) || (now - lastQ > (fetchFailed ? 60000UL : nextDelayMs));
+  if (due) {
     fetchAll();
     stockDraw();
   }

@@ -216,6 +216,11 @@ static void ntpFinish() {
 
 static void wxFetch() {
   if (WiFi.status() != WL_CONNECTED) return;
+  // Attempt-stamped FIRST: every exit below must leave the lane stamped, or
+  // clockPump() would retry on every loop pass. (An earlier version stamped
+  // only after the URL check, so a rejected URL retried in a hot loop.)
+  wxFailed = false;
+  lastWx = millis();
   // Raw TCP GET, not HTTPClient: Open-Meteo serves Transfer-Encoding: chunked
   // and ignores Accept-Encoding: identity, and this HTTPClient build misreads
   // chunked bodies (headers OK, body -> HTTPC_ERROR_READ_TIMEOUT -11, probed
@@ -236,8 +241,6 @@ static void wxFetch() {
     wxFailed = true;
     return;
   }
-  wxFailed = false;
-  lastWx = millis();  // attempt-stamped: failures retry on the 60 s lane
   WiFiClient cli;
   cli.setTimeout(4000);  // fail fast: a dead fetch must not eat the tap window
   if (!cli.connect("api.open-meteo.com", 80)) {

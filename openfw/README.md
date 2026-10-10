@@ -24,6 +24,14 @@ is remembered across reboots.
 | **CLOCK** | NTP time, date, city, weather condition + temp + high/low — text only, laid out in a fixed inner frame | NTP pools + Open-Meteo (no key) |
 | **STOCK** | live quote, % change, market-open flag, ~1 month daily sparkline | Yahoo Finance chart API (no key) |
 
+Refresh cadence is chosen per app, deliberately not one flat poll:
+
+| App | Refresh | Why |
+|-----|---------|-----|
+| CRYPTO | live WebSocket push (REST history at boot) | price ticks matter |
+| CLOCK | weather every 10 min, NTP hourly | Open-Meteo's current conditions come from 15-minutely model data, so 10 min never shows stale data; 144 req/day vs their free limit of 10k/day |
+| STOCK | every 60 s while trading, **every 15 min while closed** | the regular session is only 6.5 h x 5 days (~19% of the week), so a flat 60 s poll would spend ~81% of its requests re-fetching a price that cannot have moved, weekends included |
+
 ## New in this version: the rest of the hardware
 
 The board has more than a screen. Previous versions ignored most of it.
@@ -203,6 +211,28 @@ drawing:
    (a stray half-erased "NG" from the clock's loading message is what users saw
    as a phantom "IG"). `fb` on the console dumps the framebuffer as ASCII if
    you need to check what is really on the glass.
+
+### Polling rules (learned the hard way)
+
+Three rules, all of them the result of a real bug in this codebase:
+
+1. **Stamp the attempt, not the success.** A lane guarded by `!haveData ||
+   now - last > N` retries on *every loop pass* once `last` goes stale and the
+   fetch fails, because the interval test has already passed. `loop()` here has
+   no trailing delay, so that is thousands of requests/hour. Guard on
+   `last == 0 || now - last > N` and stamp `last` at the top of the fetch, so
+   every early return leaves the lane stamped.
+2. **Match the cadence to when the data can change.** Yahoo's regular session
+   is 6.5 h × 5 days: polling every 60 s around the clock spends ~81% of its
+   requests on a price that cannot have moved. The stock app polls 60 s open /
+   15 min closed; the clock polls weather every 10 min against 15-minutely model
+   data.
+3. **"Is the market open" is a comparison against the current time**, not
+   against the last trade. Yahoo's `regularMarketTime` pins to the closing print,
+   so `mt <= sessionEnd` stays true all evening and all weekend — the panel read
+   "OPEN" on a Saturday. The stock app compares the session window against the
+   `Date` response header instead, which also keeps it independent of NTP (only
+   the clock app calls `configTime`).
 
 ### Changing the crypto chart window
 

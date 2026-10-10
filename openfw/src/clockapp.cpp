@@ -60,20 +60,53 @@ static const int ROW_TEMP = 112;     // temp, scale 6
 static const int ROW_COND = 164;     // condition, scale 2
 static const int ROW_HILO = 186;     // high/low or the NTP status, scale 2
 static const int ROW_FOOT = 222;     // wifi status, scale 1
-// Header slots: city is left-aligned, the date right-aligns to the frame edge.
-static const int CITY_W = 136;       // city slot (x40..175)
-static const int DATE_W = 120;       // date slot (x180..299)
+// Header slots: the city is left-aligned, the date right-aligns to HDR_R —
+// NOT to the frame edge. A physical overlay tape on the glass covers roughly
+// x>=290, and at scale 2 the date's last glyph is lit up to (right edge - 2),
+// so aligning to FR=299 hid the final "T" of "SAT 10 OCT". HDR_R leaves the
+// text clear of the tape while staying inside the x40..299 safe frame.
+static const int HDR_R = 282;        // header right edge (date ends here)
+static const int HDR_GAP = 8;        // blank gutter between the two slots
+static const int DATE_W = 120;       // date slot "DDD DD MMM" = 10 chars @ scale 2
+static const int CITY_W = HDR_R - DATE_W - HDR_GAP - FX + 1;  // city slot, x40..154
 
+// WMO weather code -> text. Open-Meteo's `weather_code` is a number (0..99);
+// it never returns these words, so the wording is ours — use the full WMO
+// description rather than an abbreviation ("PARTLY CLOUDY", not "PARTLY CLDY").
+// Switch on the exact codes: the old range checks fell through for gaps in the
+// table (e.g. `c <= 48` labelled codes 4..44 "FOGGY").
 static const char *wmoText(int c) {
-  if (c == 0) return "SUNNY";
-  if (c <= 3) return c == 3 ? "OVERCAST" : "PARTLY CLDY";
-  if (c <= 48) return "FOGGY";
-  if (c <= 57) return "DRIZZLE";
-  if (c <= 67) return "RAINY";
-  if (c <= 77) return "SNOWY";
-  if (c <= 82) return "SHOWERS";
-  if (c <= 86) return "SNOW";
-  return "STORM";
+  switch (c) {
+    case 0: return "CLEAR";
+    case 1: return "MAINLY CLEAR";
+    case 2: return "PARTLY CLOUDY";
+    case 3: return "OVERCAST";
+    case 45: return "FOG";
+    case 48: return "RIME FOG";
+    case 51: return "LIGHT DRIZZLE";
+    case 53: return "DRIZZLE";
+    case 55: return "HEAVY DRIZZLE";
+    case 56:
+    case 57: return "FREEZING DRIZZLE";
+    case 61: return "LIGHT RAIN";
+    case 63: return "RAIN";
+    case 65: return "HEAVY RAIN";
+    case 66:
+    case 67: return "FREEZING RAIN";
+    case 71: return "LIGHT SNOW";
+    case 73: return "SNOW";
+    case 75: return "HEAVY SNOW";
+    case 77: return "SNOW GRAINS";
+    case 80: return "LIGHT SHOWERS";
+    case 81: return "SHOWERS";
+    case 82: return "HEAVY SHOWERS";
+    case 85: return "SNOW SHOWERS";
+    case 86: return "HEAVY SNOW SHOWERS";
+    case 95: return "THUNDERSTORM";
+    case 96:
+    case 99: return "THUNDERSTORM HAIL";
+    default: return "UNKNOWN";
+  }
 }
 
 static void upper(char *s) {
@@ -106,6 +139,28 @@ static void fieldCenter(int y, const char *s, uint16_t color, uint8_t scale, cha
   shown[shownN - 1] = 0;
 }
 
+// Centered message that auto-fits the band: the erase band always uses the
+// row's own scale (so switching between a value and a message on the same row
+// erases the identical rectangle), while the text is drawn at the largest
+// scale that fits the width. Without this a long status drawn at the temp
+// row's scale 6 ("WEATHER FAILED" = 504 px in a 258 px band) silently
+// truncated to "WEATHER".
+static void fieldMsg(int y, uint8_t boxScale, const char *s, uint16_t color, char *shown,
+                     size_t shownN) {
+  if (strlen(s) > 39) return;
+  if (strcmp(shown, s) == 0) return;
+  ct->rect(FXI, y, FWI, 8 * boxScale, 0x0000);  // constant per row
+  if (*s) {
+    uint8_t sc = boxScale;
+    while (sc > 1 && (int)strlen(s) * 6 * sc > FWI) sc--;
+    int w = (int)strlen(s) * 6 * sc;
+    int ty = y + (8 * boxScale - 8 * sc) / 2;  // vertically centered in the band
+    ct->text(FXI + (FWI - w) / 2, ty, s, color, sc);
+  }
+  strncpy(shown, s, shownN - 1);
+  shown[shownN - 1] = 0;
+}
+
 // Left-aligned field in a fixed-width slot (the header city).
 static void fieldLeft(int x, int y, const char *s, uint16_t color, uint8_t scale, char *shown,
                       size_t shownN, int clearW) {
@@ -118,14 +173,19 @@ static void fieldLeft(int x, int y, const char *s, uint16_t color, uint8_t scale
   shown[shownN - 1] = 0;
 }
 
-// Right-aligned field ending at the frame edge (the header date).
+// Right-aligned field whose LAST drawn pixel lands on xR, with the erase box
+// covering the whole slot [xR-clearW+1, xR]. Draw and erase must agree: an
+// earlier version drew from xR-w while erasing from xR-clearW+1, so the
+// leftmost column of a full-width value was drawn but never erased, and
+// switching between 9- and 10-char dates ("SAT 9 OCT" / "SAT 10 OCT") left a
+// 1 px remnant behind.
 static void fieldRight(int xR, int y, const char *s, uint16_t color, uint8_t scale, char *shown,
                        size_t shownN, int clearW) {
   char buf[40];
   fit(buf, sizeof(buf), s, clearW, scale);
   if (strcmp(shown, buf) == 0) return;
   int w = (int)strlen(buf) * 6 * scale;
-  int x = xR - w;
+  int x = xR - w + 1;
   if (x < FX) x = FX;
   ct->rect(xR - clearW + 1, y, clearW, 8 * scale, 0x0000);
   if (buf[0]) ct->text(x, y, buf, color, scale);
@@ -282,34 +342,37 @@ static void clockPaint() {
       fieldCenter(ROW_TIME, line, 0xFFFF, 8, shownTime, sizeof(shownTime));
       strftime(line, sizeof(line), "%a %d %b", &tm);
       upper(line);
-      fieldRight(FR, ROW_HEADER, line, 0x07FF, 2, shownDate, sizeof(shownDate), DATE_W);
+      fieldRight(HDR_R, ROW_HEADER, line, 0x07FF, 2, shownDate, sizeof(shownDate), DATE_W);
     }
   }
   if (!timeOk) {
     fieldCenter(ROW_TIME, "--:--", 0x8410, 8, shownTime, sizeof(shownTime));
-    fieldRight(FR, ROW_HEADER, "", 0x07FF, 2, shownDate, sizeof(shownDate), DATE_W);
+    fieldRight(HDR_R, ROW_HEADER, "", 0x07FF, 2, shownDate, sizeof(shownDate), DATE_W);
   }
   // City: header-left, same slot discipline as crypto's SYM.
   fieldLeft(FX, ROW_HEADER, cfg.city, 0x8410, 2, shownCity, sizeof(shownCity), CITY_W);
 
   if (haveWx && wCode >= 0) {
     snprintf(line, sizeof(line), "%.0fC", wTemp);
-    fieldCenter(ROW_TEMP, line, 0xFFFF, 6, shownTemp, sizeof(shownTemp));
-    fieldCenter(ROW_COND, wmoText(wCode), 0x07E0, 2, shownCond, sizeof(shownCond));
+    fieldMsg(ROW_TEMP, 6, line, 0xFFFF, shownTemp, sizeof(shownTemp));
+    fieldMsg(ROW_COND, 2, wmoText(wCode), 0x07E0, shownCond, sizeof(shownCond));
     if (timeOk) {
       snprintf(line, sizeof(line), "HI %.0f  LO %.0f", wHi, wLo);
-      fieldCenter(ROW_HILO, line, 0x8410, 2, shownHiLo, sizeof(shownHiLo));
+      fieldMsg(ROW_HILO, 2, line, 0x8410, shownHiLo, sizeof(shownHiLo));
     } else {
-      fieldCenter(ROW_HILO, "SYNCING TIME", 0xFFE0, 2, shownHiLo, sizeof(shownHiLo));
+      fieldMsg(ROW_HILO, 2, "SYNCING TIME", 0xFFE0, shownHiLo, sizeof(shownHiLo));
     }
   } else if (wxFailed) {
-    fieldCenter(ROW_TEMP, "WEATHER FAILED", 0xF800, 2, shownTemp, sizeof(shownTemp));
-    fieldCenter(ROW_COND, "RETRYING", 0xFFE0, 2, shownCond, sizeof(shownCond));
-    fieldCenter(ROW_HILO, timeOk ? "" : "SYNCING TIME", 0xFFE0, 2, shownHiLo, sizeof(shownHiLo));
+    // Same box scale as the value states: a smaller erase band here would
+    // leave the bottom of the previous big temperature on screen when weather
+    // went from loaded to failed.
+    fieldMsg(ROW_TEMP, 6, "WEATHER FAILED", 0xF800, shownTemp, sizeof(shownTemp));
+    fieldMsg(ROW_COND, 2, "RETRYING", 0xFFE0, shownCond, sizeof(shownCond));
+    fieldMsg(ROW_HILO, 2, timeOk ? "" : "SYNCING TIME", 0xFFE0, shownHiLo, sizeof(shownHiLo));
   } else {
-    fieldCenter(ROW_TEMP, "LOADING WEATHER", 0xFFE0, 2, shownTemp, sizeof(shownTemp));
-    fieldCenter(ROW_COND, "", 0x07E0, 2, shownCond, sizeof(shownCond));
-    fieldCenter(ROW_HILO, timeOk ? "" : "SYNCING TIME", 0xFFE0, 2, shownHiLo, sizeof(shownHiLo));
+    fieldMsg(ROW_TEMP, 6, "LOADING WEATHER", 0xFFE0, shownTemp, sizeof(shownTemp));
+    fieldMsg(ROW_COND, 2, "", 0x07E0, shownCond, sizeof(shownCond));
+    fieldMsg(ROW_HILO, 2, timeOk ? "" : "SYNCING TIME", 0xFFE0, shownHiLo, sizeof(shownHiLo));
   }
   // Footer, same geometry as the other apps.
   const char *fs = clockStatus();

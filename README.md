@@ -12,7 +12,7 @@ written from scratch; the only things taken from the factory firmware are
 
 | | |
 |---|---|
-| **CRYPTO** | live price, 24 h change and a scrolling 150-candle chart, any Binance USDT pair |
+| **CRYPTO** | live price, 24 h change and a scrolling 24-hour chart, any Binance USDT pair |
 | **CLOCK** | NTP time + weather with drawn condition icons |
 | **STOCK** | live quote, % change, market flag and a 1-month sparkline |
 | **Audio** | I2S tone engine for alerts, key clicks and a boot chime |

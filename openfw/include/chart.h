@@ -1,18 +1,31 @@
-// Scrolling BTC line chart for the 320x240 ST7789.
+// Scrolling price chart for the 320x240 ST7789.
 //
-// Data: Binance 1m klines over WS. Every message updates the live (rightmost)
+// Data: Binance klines over WS. Every message updates the live (rightmost)
 // point; when a candle closes (x==true) the column commits and the chart
 // scrolls. History is bootstrapped from the REST klines endpoint at boot so
-// the chart is full immediately instead of growing one candle per minute.
+// the chart is full immediately instead of growing one candle at a time.
 //
-// Drawing: incremental only — erase the oldest 2px column, draw the new
-// 2px segment (<1 ms at 20 MHz SPI). Full redraw on rescale, reconnect,
-// wake, or boot. No framebuffer: 150 floats = 600 B.
+// WINDOW: the chart must cover the same span as the header, which shows
+// *rolling 24 h* stats (price + 24 h %). The old build sampled 1 m candles,
+// so 150 points only reached back 2.5 h — a spiky chart measuring a different
+// window than the percentage above it. We now sample 5 m candles across a full
+// day. 288 x 5 m = 24 h exactly, and the plot is CH_X1-CH_X0 = 260 px wide, so
+// 288 points lands at ~1.1 points per pixel: the panel's own resolution, with
+// no wasted points. One REST call covers it (Binance caps a request at 1000
+// candles, so 1 m x 1440 for the same span would need two).
+//
+// Change CH_INTERVAL and CH_N together — they must describe the same span.
+// (CH_N is the count; the interval is the candle size.)
 #pragma once
 #include <Arduino.h>
 #include "tft.h"
 
-#define CH_N 150           // points (~2 px each across ~260 px plot width)
+#define CH_INTERVAL "5m"   // candle size; must match CH_N's span (24 h)
+#define CH_N 288           // 288 x 5 m = 24 h, ~1.1 points per plot pixel
+// Stringify CH_N so the REST URL can be built from the same constant the plot
+// uses (two-stage macro: #x alone would expand to the literal "CH_N").
+#define CH_STR_(x) #x
+#define CH_STR(x) CH_STR_(x)
 #define CH_X0 40           // plot left: bezel covers x<40, labels live right
 #define CH_X1 300          // plot right: 20 px margin for the glued frame
 #define CH_Y0 32           // plot area: header occupies y 0..31, no gap
@@ -46,10 +59,11 @@ extern Chart chart;
 extern MiniTFT *chartTft;
 
 // 24 h trend: gain/loss of the live price vs the rolling 24 h open (Binance
-// 24hr ticker REST bootstrap + miniTicker WS feed). The 150-point kline chart
-// only covers ~2.5 h, so its oldest close is the wrong baseline — one trend
-// (this one) drives line + price + pct. Falls back to the chart open until
-// the 24 h feed answers.
+// 24hr ticker REST bootstrap + miniTicker WS feed). One trend drives line +
+// price + pct so the chart and the header can never disagree. Falls back to
+// the chart's own oldest close until the 24 h feed answers — and now that the
+// chart spans 24 h, that fallback is a *correct* baseline rather than the
+// 2.5 h one it used to be.
 inline bool chartTrendUp() {
   if (!chart.haveLive) return true;
   if (chart.have24 && chart.open24 > 0) return chart.live >= chart.open24;

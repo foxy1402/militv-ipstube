@@ -20,7 +20,7 @@ is remembered across reboots.
 
 | App | What it shows | Free data source |
 |-----|---------------|------------------|
-| **CRYPTO** | live price + 24 h change + scrolling 150-candle 1 m chart, any Binance USDT pair | Binance public WebSocket + REST (no key) |
+| **CRYPTO** | live price + 24 h change + a scrolling **24-hour** chart (5 m candles), any Binance USDT pair | Binance public WebSocket + REST (no key) |
 | **CLOCK** | NTP time, date, weather with drawn condition icons, high/low, city | NTP pools + Open-Meteo (no key) |
 | **STOCK** | live quote, % change, market-open flag, ~1 month daily sparkline | Yahoo Finance chart API (no key) |
 
@@ -61,6 +61,8 @@ A **command console** runs over both USB serial and BLE (same verbs):
 help                 list commands
 app crypto|clock|stock   switch app
 next | prev          cycle apps
+ticker <PAIR>        switch the crypto pair at runtime (e.g. ticker ETHUSDT)
+px                   print the chart's axis + live price (what it draws)
 status               one-line telemetry (app, WS, WiFi, battery)
 batt                 battery voltage / percent
 batt scan            sample every ADC1 channel (battery calibration aid)
@@ -190,6 +192,23 @@ drawing:
 2. **Never draw from a callback on another task** (the WebSocket library runs
    its own task). Post a flag and drain it in `loop()` — see `cryptoDrainWs()`.
    The BLE and audio modules follow the same rule.
+
+### Changing the crypto chart window
+
+The chart's timeframe lives in `include/chart.h` and nowhere else:
+
+```c
+#define CH_INTERVAL "5m"   // candle size
+#define CH_N 288           // 288 x 5 m = 24 h
+```
+
+The REST history URL and the WebSocket stream name are both built from these
+two, so they cannot drift apart. Keep them describing the same span: Binance
+caps one klines request at 1000 candles, so `1h x 24` or `15m x 96` also give a
+day, and `5m x 288` was chosen because the plot is 260 px wide — 288 points is
+~1.1 per pixel, the panel's own resolution. The header's 24 h percentage always
+comes from Binance's separate rolling-24 h ticker, so it stays correct no matter
+which window you plot.
 
 Text is a 5×7 bitmap font (A–Z, digits, symbols; uppercase-only). A real
 antialiased font is a wanted contribution — the framebuffer and the 11 MB

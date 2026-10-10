@@ -1,11 +1,13 @@
-// MiliTV open firmware v4 — multi-app: crypto chart + clock/weather + stock.
+// MiliTV open firmware — multi-app: crypto chart + clock/weather + stock.
 //
 // Apps (tap -/+ to switch, hold -/+ for backlight, POWER sleep/wake):
-//   0 CRYPTO  any Binance USDT ticker (cfg.ticker, e.g. ETHUSDT): 1m klines
-//             over WS + REST history bootstrap, same renderer as v3.
+//   0 CRYPTO  any Binance USDT ticker (cfg.ticker, e.g. ETHUSDT): klines over
+//             WS + REST history bootstrap. Candle size and span come from
+//             chart.h (CH_INTERVAL/CH_N = 5 m x 288 = a full 24 h, matching
+//             the 24 h stats in the header).
 //   1 CLOCK   NTP clock (cfg.gmtOff) + Open-Meteo weather (cfg.lat/lon/city)
 //             with drawn condition icons. No key, free.
-//   2 STOCK   Stooq free CSV quote + daily sparkline (cfg.stock, e.g. spy.us
+//   2 STOCK   Yahoo Finance quote + daily sparkline (cfg.stock, e.g. spy.us
 //             for S&P500, aapl.us for Apple). Shows MARKET CLOSED outside
 //             hours; data is the last close.
 // WiFi: WiFiManager. Normal boot auto-joins NVS creds. Hold POWER at power-on
@@ -37,7 +39,10 @@
 #define WS_PORT 9443
 // data-api/data-stream .vision mirrors serve market data globally without
 // the geo restrictions api.binance.com sometimes returns (HTTP 451).
-#define HIST_FMT "https://data-api.binance.vision/api/v3/klines?symbol=%s&interval=1m&limit=150"
+// The interval and limit come from chart.h so the REST bootstrap, the WS
+// subscription and the plot all describe the same 24 h window.
+#define HIST_FMT \
+  "https://data-api.binance.vision/api/v3/klines?symbol=%s&interval=" CH_INTERVAL "&limit=" CH_STR(CH_N)
 #define TICKER_FMT "https://data-api.binance.vision/api/v3/ticker/24hr?symbol=%s"
 
 enum App : uint8_t { APP_CRYPTO = 0, APP_CLOCK = 1, APP_STOCK = 2, APP_N = 3 };
@@ -175,7 +180,7 @@ static void fetchHistory() {
   if (WiFi.status() != WL_CONNECTED) return;
   char url[128];
   snprintf(url, sizeof(url), HIST_FMT, cfg.ticker);
-  Serial.printf("[chart] fetching %s 150x1m history...\n", cfg.ticker);
+  Serial.printf("[chart] fetching %s %sx%s history...\n", cfg.ticker, CH_STR(CH_N), CH_INTERVAL);
   tft.text(40, 216, "LOADING HISTORY...", 0xFFE0, 1);
   // HTTPS on this core needs an explicit client; personal use => insecure.
   WiFiClientSecure cli;
@@ -218,10 +223,12 @@ static void fetchHistory() {
   if (added == 0) tft.text(40, 100, "NO DATA - CHECK TICKER", 0xF800, 2);
 }
 
-// 24 h rolling open bootstrap (REST, once per ticker). The kline WS only
-// covers ~2.5 h (150x 1m), so the 24 h baseline comes from the ticker
-// endpoint instead (probed 2026-10-10: openPrice/lastPrice/priceChangePercent
-// all present, ~550 B). The live WS miniTicker feed keeps it rolling.
+// 24 h rolling open bootstrap (REST, once per ticker). The ticker endpoint is
+// authoritative for the rolling window (probed 2026-10-10:
+// openPrice/lastPrice/priceChangePercent all present, ~550 B) and the live WS
+// miniTicker feed keeps it rolling. The chart now also spans 24 h, so the two
+// agree; this feed stays the source of truth because it is Binance's own
+// rolling-open definition (a fixed 24 h lookback, not a candle boundary).
 static void fetchTicker24() {
   if (WiFi.status() != WL_CONNECTED) return;
   char url[128];
@@ -260,7 +267,11 @@ static void fetchTicker24() {
     chart.open24 = open;
     chart.have24 = true;
     const char *pctS = doc["priceChangePercent"];
-    Serial.printf("[chart] 24h open=%.0f pct=%s%%\n", open, pctS ? pctS : "?");
+    // Use the same adaptive formatter as the screen: "%.0f" would print a
+    // sub-dollar pair's open as "$0" in the log.
+    char ob[16];
+    chartPriceText(ob, sizeof(ob), open);
+    Serial.printf("[chart] 24h open=%s pct=%s%%\n", ob, pctS ? pctS : "?");
   }
 }
 
@@ -283,11 +294,13 @@ static void wsStart() {
   wsStartAt = millis();
   char lt[16], path[80];
   lowerTicker(lt, sizeof(lt));
-  // Combined stream: kline_1m drives the chart + live price, miniTicker
+  // Combined stream: the kline feed drives the chart + live price, miniTicker
   // carries the rolling 24 h open/close for trend + pct. One socket, both
-  // feeds (~2 s cadence each). Messages self-identify: kline has "k",
-  // miniTicker has "o"/"c".
-  snprintf(path, sizeof(path), "/stream?streams=%s@kline_1m/%s@miniTicker", lt, lt);
+  // feeds. Messages self-identify: kline has "k", miniTicker has "o"/"c".
+  // The kline stream name must use the SAME interval as the chart's history
+  // (CH_INTERVAL), or the live candle commits at the wrong cadence and the
+  // chart's rightmost point would not line up with its 5 m timebase.
+  snprintf(path, sizeof(path), "/stream?streams=%s@kline_%s/%s@miniTicker", lt, CH_INTERVAL, lt);
   ws.beginSSL(WS_HOST, WS_PORT, path);
   ws.setReconnectInterval(5000);
   ws.enableHeartbeat(15000, 3000, 2);
@@ -295,7 +308,7 @@ static void wsStart() {
     switch (type) {
       case WStype_CONNECTED:
         wsStarted = false;
-        Serial.printf("[ws] connected, subscribed %s@kline_1m\n", cfg.ticker);
+        Serial.printf("[ws] connected, subscribed %s@kline_%s\n", cfg.ticker, CH_INTERVAL);
         break;
       case WStype_DISCONNECTED:
         wsStarted = false;
@@ -376,7 +389,9 @@ static void cryptoDrainWs() {
     float close = wsPendClose;
     chartPush(close);
     drawPrice();
-    Serial.printf("[ws] candle close $%.0f n=%d 24h %+.2f%%\n", close, chart.n, chartTrendPct());
+    char cb[16];
+    chartPriceText(cb, sizeof(cb), close);
+    Serial.printf("[ws] candle close %s n=%d 24h %+.2f%%\n", cb, chart.n, chartTrendPct());
   } else if (wsPendTickNew) {
     wsPendTickNew = false;
     // Live price: miniTicker carries the 24 h open and the tick, and the
@@ -390,7 +405,9 @@ static void cryptoDrainWs() {
     uint32_t tnow = millis();
     if (tnow - lastTickLog > 20000) {
       lastTickLog = tnow;
-      Serial.printf("[ws] tick $%.0f 24h %+.2f%% (#%lu)\n", price, chartTrendPct(),
+      char pb[16];
+      chartPriceText(pb, sizeof(pb), price);
+      Serial.printf("[ws] tick %s 24h %+.2f%% (#%lu)\n", pb, chartTrendPct(),
                     (unsigned long)nTick);
     }
   }
@@ -600,7 +617,7 @@ static void runCommand(const char *line, char *resp, size_t respN, bool fromBle)
   if (!*line) return;
 
   if (!strcmp(line, "help")) {
-    ok("cmds: help app next prev status batt 'batt scan' fs beep quiet bright portal quit");
+    ok("cmds: help app next prev status px ticker batt 'batt scan' fs beep quiet bright portal quit");
   } else if (!strncmp(line, "app", 3)) {
     const char *a = line + 3;
     while (*a == ' ') a++;
@@ -628,6 +645,44 @@ static void runCommand(const char *line, char *resp, size_t respN, bool fromBle)
     snprintf(resp, respN, "%s ws=%s n=%d bl=%d %s %s",
              app == APP_CRYPTO ? "CRYPTO" : app == APP_CLOCK ? "CLOCK" : "STOCK",
              ws.isConnected() ? "up" : "down", chart.n, bl, nb, bb);
+  } else if (!strcmp(line, "px")) {
+    // Report exactly what the chart would draw right now: the min/max axis
+    // labels and the live price. Lets the ticker format be checked over serial
+    // without reading the glass (sub-dollar pairs were printing "$0").
+    char hi[16], lo[16], lv[16];
+    chartPriceText(hi, sizeof(hi), chart.hi);
+    chartPriceText(lo, sizeof(lo), chart.lo);
+    chartPriceText(lv, sizeof(lv), chart.live);
+    snprintf(resp, respN, "axis %s / %s  live %s  n=%d", hi, lo, lv, chart.n);
+  } else if (!strncmp(line, "ticker", 6)) {
+    // Switch the crypto pair at runtime: rewrites cfg, restarts the chart.
+    const char *t = line + 6;
+    while (*t == ' ') t++;
+    size_t tl = strlen(t);
+    if (tl < 6 || tl > 12) {
+      ok("usage: ticker BTCUSDT (6-12 chars, e.g. ETHUSDT)");
+      return;
+    }
+    char up[16];
+    size_t k = 0;
+    for (; t[k] && k < sizeof(up) - 1; k++) {
+      char c = t[k];
+      up[k] = (c >= 'a' && c <= 'z') ? c - 32 : c;
+    }
+    up[k] = 0;
+    strncpy(cfg.ticker, up, sizeof(cfg.ticker) - 1);
+    cfg.ticker[sizeof(cfg.ticker) - 1] = 0;
+    cfgSave();
+    // Force cryptoEnter() to treat this as a new pair: drop the buffer, stop
+    // the socket, and let the staged bootstrap refetch on the next passes.
+    wsWant = false;
+    wsStarted = false;
+    ws.disconnect();
+    cryptoExit();
+    loadedTicker[0] = 0;
+    appEntered = false;
+    enterApp(APP_CRYPTO);
+    snprintf(resp, respN, "ticker -> %s", cfg.ticker);
   } else if (!strcmp(line, "batt")) {
     batteryStatus(resp, respN);
   } else if (!strcmp(line, "batt scan")) {

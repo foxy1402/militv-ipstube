@@ -30,10 +30,18 @@ void chartRescale() {
     if (chart.live < lo) lo = chart.live;
     if (chart.live > hi) hi = chart.live;
   }
-  if (hi - lo < 1.0f) {  // BTC moves more than $1/min; this is just startup
-    float mid = (hi + lo) / 2;
-    lo = mid - 0.5f;
-    hi = mid + 0.5f;
+  // Guard a degenerate range so the scale never collapses. This used to be an
+  // absolute "$1" floor, which is invisible next to BTC's 24 h range (~$1700)
+  // but is 100x the ENTIRE range of a pair like DOGE (24 h range ~$0.002):
+  // the line flattened to a straight squiggle. Scale the floor to the price
+  // instead, and keep a tiny absolute minimum so a zero/negative price cannot
+  // produce a divide-by-zero.
+  float mid = (hi + lo) * 0.5f;
+  float minWin = mid * 0.002f;  // 0.2% of price
+  if (minWin < 1e-7f) minWin = 1e-7f;
+  if (hi - lo < minWin) {
+    lo = mid - minWin * 0.5f;
+    hi = mid + minWin * 0.5f;
   }
   // 4% headroom so the line never touches the frame.
   float pad = (hi - lo) * 0.04f;
@@ -99,9 +107,10 @@ void chartPush(float close) {
     return;
   }
   if (!chartTft || chart.n < 2) return;
-  // Buffer full: every point shifted one slot left (~1.7 px), so there is no
-  // 2 px column to erase — a whole-plot redraw is the correct move. It is now
-  // one clean framebuffer push with no erase flash, once a minute.
+  // Buffer full: every point shifted one slot left, so there is no small
+  // column to erase — a whole-plot redraw is the correct move. It is one clean
+  // framebuffer push with no erase flash, and with CH_INTERVAL = 5m it happens
+  // once per 5 minutes, not every minute.
   if (chart.n == CH_N) {
     chartFull();
     return;
@@ -151,11 +160,32 @@ void chartPctText(char *out, size_t n, float pct) {
 }
 
 void chartPriceText(char *out, size_t n, float price) {
-  // "$108,421" style: no decimals, thousands separators. BTC only.
-  long v = (long)(price + 0.5f);
-  char tmp[24];
-  snprintf(tmp, sizeof(tmp), "%ld", v < 0 ? -v : v);
-  int len = strlen(tmp), commas = (len - 1) / 3, j = 0;
+  // "$82,656" for BTC, but a fixed whole-dollar format prints "$0" for every
+  // sub-dollar pair (DOGE $0.086, ADA $0.25) — pairs this firmware advertises
+  // support for. Pick decimals from the magnitude, then group the integer part.
+  //
+  // The label slot is 7 characters (46 px at the font's 6 px cell), so the
+  // decimal count is capped by what actually fits: "$" + digits + "." + decs
+  // <= 7. Without that cap, DOGE's "$0.086000" would be truncated mid-number.
+  const int MAXCHARS = 7;
+  float a = price < 0 ? -price : price;
+  int preferred;
+  if (a >= 1000.0f) preferred = 0;       // $82,656
+  else if (a >= 1.0f) preferred = 2;     // $1.40
+  else if (a >= 0.01f) preferred = 4;    // $0.0860
+  else preferred = 6;                    // $0.000123
+  // Digit count of the integer part (a >= 1 always has at least one digit).
+  int intDigits = 1;
+  for (float t = a; t >= 10.0f; t /= 10.0f) intDigits++;
+  // "$" + intDigits + "." + dec <= MAXCHARS, but commas add one per 3 digits.
+  int commas = (intDigits - 1) / 3;
+  int budget = MAXCHARS - 1 - intDigits - commas - 1;
+  int dec = preferred < budget ? preferred : (budget > 0 ? budget : 0);
+
+  char tmp[32];
+  snprintf(tmp, sizeof(tmp), "%.*f", dec, a);
+  char *dot = strchr(tmp, '.');
+  int intLen = dot ? (int)(dot - tmp) : (int)strlen(tmp);
   char *p = out;
   size_t left = n;
   auto put = [&](char c) {
@@ -165,11 +195,14 @@ void chartPriceText(char *out, size_t n, float price) {
     }
   };
   put('$');
-  if (v < 0) put('-');
-  for (int i = 0; i < len; i++) {
+  if (price < 0) put('-');
+  for (int i = 0; i < intLen; i++) {
     put(tmp[i]);
-    int rest = len - 1 - i;
+    int rest = intLen - 1 - i;
     if (rest > 0 && rest % 3 == 0) put(',');
+  }
+  if (dot) {
+    for (const char *q = dot; *q; q++) put(*q);  // includes the '.'
   }
   *p = 0;
 }

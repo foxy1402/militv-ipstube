@@ -68,14 +68,26 @@ void chartFull() {
     chartTft->lineAA(chartX(i - 1), chartY(chart.v[i - 1]), chartX(i), chartY(chart.v[i]), lc);
   // Min/max labels: inside the plot's right edge (x CH_X1-46), NOT the
   // left — the bezel covers x<40 and the glued frame covers x>~300, so
-  // edge-to-edge labels truncate to "$83,". 46 px fits "$83,122" (42 px).
+  // edge-to-edge labels truncate to "$83,". 46 px fits "$83,122" (42 px, the
+  // 10 px atlas advances 6 px). Anchors and bands are chosen so the erase
+  // never crosses the frame lines at CH_Y0/CH_Y1 nor reaches the footer: the
+  // 10 px atlas inks -2..+10 around its anchor (the ',' tail).
+  const AAFont &lf = kAASmall;
   char buf[16];
   chartPriceText(buf, sizeof(buf), chart.hi);
-  chartTft->rect(CH_X1 - 46, CH_Y0 + 2, 46, 10, CH_BG);
-  chartTft->text(CH_X1 - 46, CH_Y0 + 2, buf, 0x8410, 1);
+  {
+    int top = aaStrTop(lf, buf), bot = aaStrBot(lf, buf);
+    int ay = CH_Y0 + 3;
+    chartTft->rect(CH_X1 - 46, ay + top, 46, bot - top + 1, CH_BG);
+    chartTft->textAA(lf, CH_X1 - 46, ay, buf, 0x8410);
+  }
   chartPriceText(buf, sizeof(buf), chart.lo);
-  chartTft->rect(CH_X1 - 46, CH_Y1 - 10, 46, 10, CH_BG);
-  chartTft->text(CH_X1 - 46, CH_Y1 - 10, buf, 0x8410, 1);
+  {
+    int top = aaStrTop(lf, buf), bot = aaStrBot(lf, buf);
+    int ay = CH_Y1 - 12;
+    chartTft->rect(CH_X1 - 46, ay + top, 46, bot - top + 1, CH_BG);
+    chartTft->textAA(lf, CH_X1 - 46, ay, buf, 0x8410);
+  }
   // Live dot in the 24 h trend color.
   if (chart.haveLive && chart.n > 0) {
     int x = chartX(chart.n - 1), y = chartY(chart.live);

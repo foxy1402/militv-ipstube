@@ -251,9 +251,20 @@ day, and `5m x 288` was chosen because the plot is 260 px wide — 288 points is
 comes from Binance's separate rolling-24 h ticker, so it stays correct no matter
 which window you plot.
 
-Text is a 5×7 bitmap font (A–Z, digits, symbols; uppercase-only). A real
-antialiased font is a wanted contribution — the framebuffer and the 11 MB
-asset partition are both there for it.
+Text is anti-aliased Roboto Mono (SIL OFL 1.1, see
+[`include/OFL.txt`](include/OFL.txt)), stored as 4-bit-alpha atlases in
+`include/aa_roboto_*.h` and blended into the PSRAM framebuffer by
+`MiniTFT::textAA()`. Five sizes exist — 10/20/40/60/80 px — one per step of the
+old block font, because Roboto Mono's advance is exactly `0.6 * size` and so
+`size = 10 * scale` reproduces the previous `6 * scale` advance. That is what
+let the swap keep every slot width and erase anchor unchanged. Only ASCII
+32..90 is in the atlas (uppercase, digits, punctuation); lowercase input is
+uppercased at draw time.
+
+Erase boxes are sized from the atlas ink extent (`aaBandH()` / `aaEraseBand()`
+in `include/aafont.h`), not from the old `8 * scale` cell: AA ink starts above
+the caps (`$`, parens) and reaches below them (`,` tails, descenders). Regenerate
+the atlases with [`tools/militv-font-atlas-gen.py`](../tools/README.md).
 
 ---
 

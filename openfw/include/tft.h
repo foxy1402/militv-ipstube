@@ -30,8 +30,24 @@
 #include <math.h>
 #include <esp_heap_caps.h>
 #include "pins.h"
-#include "roboto_mono_20.h"  // AA atlas generated from Roboto Mono (OFL 1.1)
-#include "roboto_mono_28.h"  // AA atlas, 28px: scale-3 replacement
+// Anti-aliased Roboto Mono atlases (OFL 1.1, see OFL.txt). One size per old
+// block-font scale step: 10/20/40/60/80 px == text(..., scale 1/2/4/6/8).
+#include "aa_roboto_10.h"
+#include "aa_roboto_20.h"
+#include "aa_roboto_40.h"
+#include "aa_roboto_60.h"
+#include "aa_roboto_80.h"
+
+// Atlas for an old block-font scale step. The five atlases exist so that the
+// advance (6 * scale) is unchanged; anything in between snaps DOWN, because a
+// larger font than asked for would overflow the slot the caller sized.
+inline const AAFont &aaFont(int scale) {
+  if (scale >= 8) return kAAHuge;
+  if (scale >= 6) return kAABig;
+  if (scale >= 4) return kAATitle;
+  if (scale >= 2) return kAAMed;
+  return kAASmall;
+}
 
 class MiniTFT {
  public:
@@ -39,15 +55,17 @@ class MiniTFT {
   void setRotation(uint8_t r);
   void fill(uint16_t color);
   void rect(int x, int y, int w, int h, uint16_t color);
+  // Block-font-style call kept for compatibility: it now renders the
+  // anti-aliased atlas for this scale step (aaFont), so no call site can draw
+  // the old hard-edged 5x7 glyphs any more. Advance is unchanged (6*scale).
   void text(int x, int y, const char *s, uint16_t color, uint8_t scale = 2);
-  // Anti-aliased text from the Roboto Mono 20px atlas. y is the TOP of the
-  // cap-height band (where the ink top of 'A' sits), so a scale-2 text()
-  // call site keeps the same x and y, and the 12px advance matches scale 2.
-  void textAA(int x, int y, const char *s, uint16_t color);
-  // Same as textAA but from the 28px atlas: the scale-3 replacement.
-  // Advance is 17px (vs 18px for scale 3) and cap height ~20px (vs 21px),
-  // so a scale-3 call site keeps the same x and y.
-  void textAA28(int x, int y, const char *s, uint16_t color);
+  // Anti-aliased text from any Roboto Mono atlas. y is the TOP of the
+  // cap-height band (where the ink top of 'A' sits), so a scale-2 text() call
+  // site keeps the same x and y. Ink can extend above y and below the caps,
+  // so erase boxes should use aaBandH()/aaEraseBand() from aafont.h.
+  // Deliberately NO scale overload: textAA(40, 8, ...) would silently read 40
+  // as a scale step. Use text() (scale) or textAA(aaFont(n), ...) explicitly.
+  void textAA(const AAFont &f, int x, int y, const char *s, uint16_t color);
   void sleep();
   void wake();
   void pixel(int x, int y, uint16_t color);
@@ -70,7 +88,6 @@ class MiniTFT {
   void window(int x0, int y0, int x1, int y1);
   void push(uint16_t color, uint32_t n);
   void pushRect(int x0, int y0, int x1, int y1);
-  void glyph(int x, int y, char ch, uint16_t color, uint8_t scale);
   void markDirty(int x0, int y0, int x1, int y1);
 
   uint16_t *fb = nullptr;  // PSRAM framebuffer; nullptr => direct-to-panel
@@ -485,166 +502,49 @@ inline void MiniTFT::lineAA(int x0, int y0, int x1, int y1, uint16_t color) {
   }
 }
 
-// 5x7 classic font, MSB-top, 1px spacing via scale blocks.
-static const uint8_t kFont[][5] = {
-    {0x00, 0x00, 0x00, 0x00, 0x00},  // space
-    {0x00, 0x00, 0x5F, 0x00, 0x00},  // !
-    {0x00, 0x07, 0x00, 0x07, 0x00},  // "
-    {0x14, 0x7F, 0x14, 0x7F, 0x14},  // #
-    {0x24, 0x2A, 0x7F, 0x2A, 0x12},  // $
-    {0x23, 0x13, 0x08, 0x64, 0x62},  // %
-    {0x36, 0x49, 0x55, 0x22, 0x50},  // &
-    {0x00, 0x05, 0x03, 0x00, 0x00},  // '
-    {0x00, 0x1C, 0x22, 0x41, 0x00},  // (
-    {0x00, 0x41, 0x22, 0x1C, 0x00},  // )
-    {0x14, 0x08, 0x3E, 0x08, 0x14},  // *
-    {0x08, 0x08, 0x3E, 0x08, 0x08},  // +
-    {0x00, 0x50, 0x30, 0x00, 0x00},  // ,
-    {0x08, 0x08, 0x08, 0x08, 0x08},  // -
-    {0x00, 0x60, 0x60, 0x00, 0x00},  // .
-    {0x20, 0x10, 0x08, 0x04, 0x02},  // /
-    {0x3E, 0x51, 0x49, 0x45, 0x3E},  // 0
-    {0x00, 0x42, 0x7F, 0x40, 0x00},  // 1
-    {0x42, 0x61, 0x51, 0x49, 0x46},  // 2
-    {0x21, 0x41, 0x45, 0x4B, 0x31},  // 3
-    {0x18, 0x14, 0x12, 0x7F, 0x10},  // 4
-    {0x27, 0x45, 0x45, 0x45, 0x39},  // 5
-    {0x3C, 0x4A, 0x49, 0x49, 0x30},  // 6
-    {0x01, 0x71, 0x0B, 0x0D, 0x03},  // 7
-    {0x36, 0x49, 0x49, 0x49, 0x36},  // 8
-    {0x06, 0x49, 0x49, 0x29, 0x1E},  // 9
-    {0x00, 0x36, 0x36, 0x00, 0x00},  // :
-    {0x00, 0x56, 0x36, 0x00, 0x00},  // ;
-    {0x08, 0x14, 0x22, 0x41, 0x00},  // <
-    {0x14, 0x14, 0x14, 0x14, 0x14},  // =
-    {0x00, 0x41, 0x22, 0x14, 0x08},  // >
-    {0x02, 0x01, 0x51, 0x09, 0x06},  // ?
-    {0x32, 0x49, 0x79, 0x41, 0x3E},  // @
-    {0x7E, 0x11, 0x11, 0x11, 0x7E},  // A
-    {0x7F, 0x49, 0x49, 0x49, 0x36},  // B
-    {0x3E, 0x41, 0x41, 0x41, 0x22},  // C
-    {0x7F, 0x41, 0x41, 0x22, 0x1C},  // D
-    {0x7F, 0x49, 0x49, 0x49, 0x41},  // E
-    {0x7F, 0x48, 0x48, 0x48, 0x40},  // F
-    {0x3E, 0x41, 0x49, 0x49, 0x7A},  // G
-    {0x7F, 0x08, 0x08, 0x08, 0x7F},  // H
-    {0x00, 0x41, 0x7F, 0x41, 0x00},  // I
-    {0x20, 0x40, 0x41, 0x3F, 0x01},  // J
-    {0x7F, 0x08, 0x14, 0x22, 0x41},  // K
-    {0x7F, 0x40, 0x40, 0x40, 0x40},  // L
-    {0x7F, 0x02, 0x0C, 0x02, 0x7F},  // M
-    {0x7F, 0x04, 0x08, 0x10, 0x7F},  // N
-    {0x3E, 0x41, 0x41, 0x41, 0x3E},  // O
-    {0x7F, 0x09, 0x09, 0x09, 0x06},  // P
-    {0x3E, 0x41, 0x51, 0x21, 0x5E},  // Q
-    {0x7F, 0x09, 0x19, 0x29, 0x46},  // R
-    {0x46, 0x49, 0x49, 0x49, 0x31},  // S
-    {0x01, 0x01, 0x7F, 0x01, 0x01},  // T
-    {0x7F, 0x40, 0x40, 0x40, 0x7F},  // U
-    {0x1F, 0x20, 0x40, 0x20, 0x1F},  // V
-    {0x3F, 0x40, 0x38, 0x40, 0x3F},  // W
-    {0x63, 0x14, 0x08, 0x14, 0x63},  // X
-    {0x07, 0x08, 0x70, 0x08, 0x07},  // Y
-    {0x61, 0x51, 0x49, 0x45, 0x43},  // Z
-};
+// The 5x7 block font that used to live here is gone: every call site in the
+// firmware now renders the anti-aliased Roboto Mono atlas, so glyph() and the
+// 5x7 table had no callers left. text() keeps its old signature (and its
+// unchanged 6*scale advance) so existing layout code did not have to move.
 
-// One rect per contiguous run of set pixels in each font column: a typical
-// glyph is ~5 windows instead of ~16 (one per lit pixel), and in framebuffer
-// mode it is pure RAM writes with a single dirty mark for the whole glyph.
-inline void MiniTFT::glyph(int x, int y, char ch, uint16_t color, uint8_t scale) {
-  if (ch < 32 || ch > 90) ch = '?';
-  const uint8_t *g = kFont[ch - 32];
-  for (int col = 0; col < 5; col++) {
-    uint8_t bits = g[col];
-    if (!bits) continue;
-    int row = 0;
-    while (row < 7) {
-      if (bits & (1 << row)) {
-        int len = 1;
-        while (row + len < 7 && (bits & (1 << (row + len)))) len++;
-        rect(x + col * scale, y + row * scale, scale, len * scale, color);
-        row += len;
-      } else {
-        row++;
-      }
+// One AA renderer for every atlas size. Glyph top = y + (yoff - cap_top), so y
+// always means "top of the cap-height band" and a call site keeps its old x/y.
+// Lowercase is uppercased: the atlas covers ASCII 32..90 only, exactly like
+// the block font it replaces.
+inline void MiniTFT::textAA(const AAFont &f, int x, int y, const char *s, uint16_t color) {
+  int cx = x;
+  while (*s) {
+    char ch = *s++;
+    if (ch >= 'a' && ch <= 'z') ch -= 32;
+    if (ch == '\n') {
+      y += f.ascent;
+      cx = x;
+      continue;
     }
+    int idx = (int)(uint8_t)ch - f.first;
+    if (idx < 0 || idx >= f.count) {
+      cx += f.adv;
+      continue;
+    }
+    const AAGlyph &g = f.glyphs[idx];
+    if (g.h) {
+      int gx = cx + g.xoff;
+      int gy = y + (g.yoff - f.cap_top);
+      // Bitmap rows are packed contiguously with no per-row padding, so the
+      // nibble index must be (r*w + c)/2, not (r*w)/2 + c/2.
+      for (int r = 0; r < g.h; r++)
+        for (int c = 0; c < g.w; c++) {
+          uint8_t nib = (f.bitmap[g.off + (r * g.w + c) / 2] >> ((c & 1) ? 0 : 4)) & 0xF;
+          if (nib) blendPixel(gx + c, gy + r, color, (uint8_t)(nib * 17));
+        }
+    }
+    cx += g.adv ? g.adv : f.adv;
   }
 }
 
+// The old block-font entry point, now an alias for the matching AA atlas.
+// Scale steps map to sizes 10/20/40/60/80 (aaFont), so every existing call
+// keeps its x/y and its 6*scale advance.
 inline void MiniTFT::text(int x, int y, const char *s, uint16_t color, uint8_t scale) {
-  int cx = x;
-  while (*s) {
-    char ch = *s;
-    if (ch >= 'a' && ch <= 'z') ch -= 32;  // font covers A-Z only
-    if (ch == '\n') {
-      y += 8 * scale;
-      cx = x;
-    } else {
-      glyph(cx, y, ch, color, scale);
-      cx += 6 * scale;
-    }
-    s++;
-  }
-}
-
-// Anti-aliased text: each glyph is a 4-bit-alpha bitmap from the offline
-// Roboto Mono atlas (roboto_mono_20.h), blended over the framebuffer with
-// blendPixel. Same cost model as everything else in this driver: RAM writes
-// only, one dirty-rect push per flush. Unknown chars advance one cell;
-// lowercase is uppercased like text().
-inline void MiniTFT::textAA(int x, int y, const char *s, uint16_t color) {
-  int cx = x;
-  while (*s) {
-    char ch = *s++;
-    if (ch >= 'a' && ch <= 'z') ch -= 32;
-    if (ch == '\n') {
-      y += RM20_ASCENT;
-      cx = x;
-      continue;
-    }
-    if (ch < RM20_FIRST || ch >= RM20_FIRST + RM20_COUNT) {
-      cx += 12;
-      continue;
-    }
-    const RM20Glyph &g = kRM20Glyphs[ch - RM20_FIRST];
-    int gy = y + (g.yoff - RM20_CAP_TOP);
-    int gx = cx + g.xoff;
-    for (int r = 0; r < g.h; r++) {
-      for (int c = 0; c < g.w; c++) {
-        uint8_t nib = (kRM20Bitmap[g.off + (r * g.w + c) / 2] >> ((c & 1) ? 0 : 4)) & 0xF;
-        if (nib) blendPixel(gx + c, gy + r, color, (uint8_t)(nib * 17));
-      }
-    }
-    cx += g.adv;
-  }
-}
-
-// 28px twin of textAA: same loop, RM28 atlas. Deliberately a copy, not a
-// template — the two atlases have distinct struct types and this keeps the
-// header readable on Arduino. Only the scale-3 SETUP title uses it.
-inline void MiniTFT::textAA28(int x, int y, const char *s, uint16_t color) {
-  int cx = x;
-  while (*s) {
-    char ch = *s++;
-    if (ch >= 'a' && ch <= 'z') ch -= 32;
-    if (ch == '\n') {
-      y += RM28_ASCENT;
-      cx = x;
-      continue;
-    }
-    if (ch < RM28_FIRST || ch >= RM28_FIRST + RM28_COUNT) {
-      cx += 17;
-      continue;
-    }
-    const RM28Glyph &g = kRM28Glyphs[ch - RM28_FIRST];
-    int gy = y + (g.yoff - RM28_CAP_TOP);
-    int gx = cx + g.xoff;
-    for (int r = 0; r < g.h; r++) {
-      for (int c = 0; c < g.w; c++) {
-        uint8_t nib = (kRM28Bitmap[g.off + (r * g.w + c) / 2] >> ((c & 1) ? 0 : 4)) & 0xF;
-        if (nib) blendPixel(gx + c, gy + r, color, (uint8_t)(nib * 17));
-      }
-    }
-    cx += g.adv;
-  }
+  textAA(aaFont(scale), x, y, s, color);
 }

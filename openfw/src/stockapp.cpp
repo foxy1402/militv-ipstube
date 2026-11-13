@@ -200,11 +200,17 @@ static void fetchAll() {
 }
 
 // Left-aligned field at fixed x: erase-then-write only when changed.
+// The erase band is the atlas's real ink extent, not the old 8*scale cell: the
+// AA ink starts above the caps ('$' at -2 px) and the ','/'%' tails reach below
+// them, so a cell-height band would clip the top and leave tails behind.
 static void textLUpd(int x, int y, const char *s, uint16_t color, uint8_t scale, char *shown,
                      size_t shownN, int clearW) {
   if (strcmp(shown, s) == 0) return;
-  st->rect(x, y, clearW, 8 * scale, 0x0000);
-  st->text(x, y, s, color, scale);
+  const AAFont &f = aaFont(scale);
+  int top, bot;
+  aaEraseBand(f, s, f, shown, top, bot);
+  st->rect(x, y + top, clearW, bot - top + 1, 0x0000);
+  st->textAA(f, x, y, s, color);
   strncpy(shown, s, shownN - 1);
   shown[shownN - 1] = 0;
 }
@@ -242,9 +248,9 @@ void stockDraw() {
     // Compact error that never traps the buttons: two lines + footer hint.
     if (strcmp(shownBanner, "STFAIL") != 0) {
       st->rect(40, 60, 260, 76, 0x0000);
-      st->text(40, 60, "FETCH FAILED", 0xF800, 2);
-      st->text(40, 90, "CHECK SYMBOL IN SETUP", 0xFFE0, 1);
-      st->text(40, 104, "PORTAL, TAP + OR -", 0xFFE0, 1);
+      st->textAA(kAAMed, 40, 60, "FETCH FAILED", 0xF800);      // ink 58..79
+      st->textAA(kAASmall, 40, 90, "CHECK SYMBOL IN SETUP", 0xFFE0);  // 88..100
+      st->textAA(kAASmall, 40, 106, "PORTAL, TAP + OR -", 0xFFE0);    // 104..116
       strncpy(shownBanner, "STFAIL", sizeof(shownBanner) - 1);
       shownPrice[0] = 0;
       shownPct[0] = 0;
@@ -286,8 +292,10 @@ void stockDraw() {
   }
   const char *fs = stockStatus();
   if (strcmp(shownFoot, fs) != 0) {
-    st->rect(40, 222, 260, 8, 0x0000);
-    st->text(40, 222, fs, 0x07FF, 1);
+    int top, bot;
+    aaEraseBand(kAASmall, fs, kAASmall, shownFoot, top, bot);
+    st->rect(40, 222 + top, 260, bot - top + 1, 0x0000);
+    st->textAA(kAASmall, 40, 222, fs, 0x07FF);
     strncpy(shownFoot, fs, sizeof(shownFoot) - 1);
   }
 }

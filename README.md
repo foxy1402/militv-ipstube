@@ -72,9 +72,10 @@ device owner's NVS, including WiFi credentials.
 
 Pull requests are welcome, and a few things are explicitly wanted:
 
-- **A real font.** Text is a 5×7 bitmap font (uppercase only). The PSRAM
-  framebuffer and the 11 MB asset partition are both already there for an
-  antialiased font.
+- **More type sizes and icons.** Text is anti-aliased Roboto Mono at five sizes
+  (10/20/40/60/80 px, generated offline into 4-bit-alpha atlases by
+  `tools/militv-font-atlas-gen.py`). Extra weights and icon sets are a script
+  run away.
 - **A working MP3/AAC decoder** on top of the I2S bring-up, for alarm sounds.
 - **The battery divider ratio.** One number this project cannot recover by
   static analysis — see the honesty note in [openfw/README.md](openfw/README.md).

@@ -57,3 +57,7 @@
 /.idea/
 *.log
 __pycache__/
+# Font workbench: the downloaded TTF (a binary blob, deliberately not vendored)
+# and the serial framebuffer dumps used to verify on-glass rendering.
+/.fontwork/
+/.fbtmp/

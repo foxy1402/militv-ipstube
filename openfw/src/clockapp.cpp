@@ -116,8 +116,10 @@ static void upper(char *s) {
 
 // Longest prefix of src that fits maxw px at this scale, so the drawn text and
 // its erase box are always the same width and nothing crosses the frame.
+// Width comes from the atlas advance (6 * scale, unchanged), and the erase
+// band from the atlas ink extent, so AA overshoot cannot escape the band.
 static void fit(char *dst, size_t dstN, const char *src, int maxw, uint8_t scale) {
-  int maxChars = maxw / (6 * scale);
+  int maxChars = maxw / aaFont(scale).adv;
   size_t n = strlen(src);
   if ((int)n > maxChars) n = (size_t)maxChars;
   if (n >= dstN) n = dstN - 1;
@@ -132,9 +134,14 @@ static void fieldCenter(int y, const char *s, uint16_t color, uint8_t scale, cha
   char buf[40];
   fit(buf, sizeof(buf), s, FWI, scale);
   if (strcmp(shown, buf) == 0) return;
-  int w = (int)strlen(buf) * 6 * scale;
-  ct->rect(FXI, y, FWI, 8 * scale, 0x0000);
-  if (buf[0]) ct->text(FXI + (FWI - w) / 2, y, buf, color, scale);
+  const AAFont &f = aaFont(scale);
+  int w = (int)strlen(buf) * f.adv;
+  // Band = union of the old and new strings' real ink, so a shrinking value
+  // still clears its predecessor without erasing the row above.
+  int top, bot;
+  aaEraseBand(f, buf, f, shown, top, bot);
+  ct->rect(FXI, y + top, FWI, bot - top + 1, 0x0000);
+  if (buf[0]) ct->textAA(f, FXI + (FWI - w) / 2, y, buf, color);
   strncpy(shown, buf, shownN - 1);
   shown[shownN - 1] = 0;
 }
@@ -149,13 +156,23 @@ static void fieldMsg(int y, uint8_t boxScale, const char *s, uint16_t color, cha
                      size_t shownN) {
   if (strlen(s) > 39) return;
   if (strcmp(shown, s) == 0) return;
-  ct->rect(FXI, y, FWI, 8 * boxScale, 0x0000);  // constant per row
+  // The erase band is the union of the old and new ink, measured with the
+  // ROW's atlas for the old value, so switching from a big value to a short
+  // message clears the whole predecessor — and never reaches the next row.
+  const AAFont &fb = aaFont(boxScale);
+  int top, bot;
+  aaEraseBand(fb, s, fb, shown, top, bot);
+  ct->rect(FXI, y + top, FWI, bot - top + 1, 0x0000);
   if (*s) {
+    // Shrink to the largest atlas that fits the width.
     uint8_t sc = boxScale;
-    while (sc > 1 && (int)strlen(s) * 6 * sc > FWI) sc--;
-    int w = (int)strlen(s) * 6 * sc;
-    int ty = y + (8 * boxScale - 8 * sc) / 2;  // vertically centered in the band
-    ct->text(FXI + (FWI - w) / 2, ty, s, color, sc);
+    while (sc > 1 && (int)strlen(s) * aaFont(sc).adv > FWI) sc--;
+    const AAFont &f = aaFont(sc);
+    int w = (int)strlen(s) * f.adv;
+    // Center the smaller atlas's ink inside the band we just cleared.
+    int ty = y + top + ((bot - top + 1) - (aaStrBot(f, s) - aaStrTop(f, s) + 1)) / 2
+             - aaStrTop(f, s);
+    ct->textAA(f, FXI + (FWI - w) / 2, ty, s, color);
   }
   strncpy(shown, s, shownN - 1);
   shown[shownN - 1] = 0;
@@ -167,8 +184,11 @@ static void fieldLeft(int x, int y, const char *s, uint16_t color, uint8_t scale
   char buf[40];
   fit(buf, sizeof(buf), s, clearW, scale);
   if (strcmp(shown, buf) == 0) return;
-  ct->rect(x, y, clearW, 8 * scale, 0x0000);
-  if (buf[0]) ct->text(x, y, buf, color, scale);
+  const AAFont &f = aaFont(scale);
+  int top, bot;
+  aaEraseBand(f, buf, f, shown, top, bot);
+  ct->rect(x, y + top, clearW, bot - top + 1, 0x0000);
+  if (buf[0]) ct->textAA(f, x, y, buf, color);
   strncpy(shown, buf, shownN - 1);
   shown[shownN - 1] = 0;
 }
@@ -184,11 +204,14 @@ static void fieldRight(int xR, int y, const char *s, uint16_t color, uint8_t sca
   char buf[40];
   fit(buf, sizeof(buf), s, clearW, scale);
   if (strcmp(shown, buf) == 0) return;
-  int w = (int)strlen(buf) * 6 * scale;
+  const AAFont &f = aaFont(scale);
+  int w = (int)strlen(buf) * f.adv;
   int x = xR - w + 1;
   if (x < FX) x = FX;
-  ct->rect(xR - clearW + 1, y, clearW, 8 * scale, 0x0000);
-  if (buf[0]) ct->text(x, y, buf, color, scale);
+  int top, bot;
+  aaEraseBand(f, buf, f, shown, top, bot);
+  ct->rect(xR - clearW + 1, y + top, clearW, bot - top + 1, 0x0000);
+  if (buf[0]) ct->textAA(f, x, y, buf, color);
   strncpy(shown, buf, shownN - 1);
   shown[shownN - 1] = 0;
 }
@@ -380,8 +403,10 @@ static void clockPaint() {
   // Footer, same geometry as the other apps.
   const char *fs = clockStatus();
   if (strcmp(shownFoot, fs) != 0) {
-    ct->rect(40, ROW_FOOT, 260, 8, 0x0000);
-    ct->text(40, ROW_FOOT, fs, 0x07FF, 1);
+    int top, bot;
+    aaEraseBand(kAASmall, fs, kAASmall, shownFoot, top, bot);
+    ct->rect(40, ROW_FOOT + top, 260, bot - top + 1, 0x0000);
+    ct->textAA(kAASmall, 40, ROW_FOOT, fs, 0x07FF);
     strncpy(shownFoot, fs, sizeof(shownFoot) - 1);
   }
 }

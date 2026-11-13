@@ -62,6 +62,8 @@ static char loadedTicker[16] = "";  // ticker the chart buffer belongs to
 static char shownCryptoSym[16] = "";
 static char shownCryptoPct[20] = "";
 static char shownCryptoPrice[20] = "";
+// SYM slot is x40..87 (48 px); the scale-2 atlas advances 12 px -> 4 chars.
+static const int SYM_COLS = 48 / 12;
 static uint16_t shownCryptoColor = 0;
 static char shownCryptoFoot[40] = "";
 // Line buffer for the serial console (shared command set with BLE).
@@ -99,10 +101,14 @@ static void setBacklight(uint8_t v) {
 static void drawHeader() {
   char sym[16];
   cfgBaseSym(sym, sizeof(sym));
+  // The slot is 48 px and the scale-2 atlas advances 12 px, so a 5-char base
+  // ("1000SATS" -> "SATS") would draw 96 px wide, straight over the pct field
+  // at x88. Clamp the string to the slot instead of letting it overflow.
+  if ((int)strlen(sym) > SYM_COLS) sym[SYM_COLS] = 0;
   if (strcmp(shownCryptoSym, sym) != 0) {
-    // Symbol slot (x40, scale 2): clear + rewrite only on ticker change.
+    // Symbol slot (x40): clear + rewrite only on ticker change.
     tft.rect(40, 0, 48, 32, 0x0000);
-    tft.textAA(40, 8, sym, 0xFFFF);
+    tft.textAA(kAAMed, 40, 8, sym, 0xFFFF);
     strncpy(shownCryptoSym, sym, sizeof(shownCryptoSym) - 1);
     tft.flush();
   }
@@ -114,8 +120,14 @@ static void drawHeader() {
 static void drawPriceField(int x, int clearW, const char *s, uint16_t color, char *shown,
                            uint16_t *shownColor) {
   if (strcmp(shown, s) == 0 && *shownColor == color) return;
-  tft.rect(x, 4, clearW, 24, 0x0000);
-  tft.textAA(x, 8, s, color);
+  // Erase the band the atlas actually inks, not the old 8*scale cell: at
+  // 20 px a '$' starts 2 px above the caps and a ','/'%' tail reaches 19 px
+  // below them, so an 8 px band would both clip and leave tails behind.
+  const AAFont &f = kAAMed;
+  int top, bot;
+  aaEraseBand(f, s, f, shown, top, bot);
+  tft.rect(x, 8 + top, clearW, bot - top + 1, 0x0000);
+  tft.textAA(f, x, 8, s, color);
   strncpy(shown, s, 19);
   shown[19] = 0;
   *shownColor = color;
@@ -146,7 +158,9 @@ static void drawFooter() {
   // the 5 s refresh no longer flashes the whole band every pass.
   if (strcmp(shownCryptoFoot, buf) == 0) return;
   tft.rect(0, 216, TFT_W, 24, 0x0000);
-  tft.text(40, 222, buf, net.portalArmed ? 0xFFE0 : 0x07FF, 1);
+  // Footer text sits at y222 (cap top) and the 10 px atlas inks -2..+10 from
+  // there, inside the y216..239 band the clear above already covers.
+  tft.textAA(kAASmall, 40, 222, buf, net.portalArmed ? 0xFFE0 : 0x07FF);
   strncpy(shownCryptoFoot, buf, sizeof(shownCryptoFoot) - 1);
 }
 
@@ -181,7 +195,7 @@ static void fetchHistory() {
   char url[128];
   snprintf(url, sizeof(url), HIST_FMT, cfg.ticker);
   Serial.printf("[chart] fetching %s %sx%s history...\n", cfg.ticker, CH_STR(CH_N), CH_INTERVAL);
-  tft.text(40, 216, "LOADING HISTORY...", 0xFFE0, 1);
+  tft.textAA(kAASmall, 40, 216, "LOADING HISTORY...", 0xFFE0);
   // HTTPS on this core needs an explicit client; personal use => insecure.
   WiFiClientSecure cli;
   cli.setInsecure();
@@ -220,7 +234,7 @@ static void fetchHistory() {
   }
   chartRescale();
   Serial.printf("[chart] history: %d candles\n", added);
-  if (added == 0) tft.text(40, 100, "NO DATA - CHECK TICKER", 0xF800, 2);
+  if (added == 0) tft.textAA(kAAMed, 40, 100, "NO DATA - CHECK TICKER", 0xF800);
 }
 
 // 24 h rolling open bootstrap (REST, once per ticker). The ticker endpoint is
@@ -503,13 +517,16 @@ static void switchApp(int dir) {
 // the exit hint. Called after netPortalStart().
 static void drawPortalScreen() {
   tft.fill(0x0000);
-  tft.textAA28(40, 40, "SETUP", 0xFFFF);
-  tft.text(40, 80, "JOIN AP:", 0xFFE0, 2);
-  tft.text(40, 102, PORTAL_AP_NAME, 0x07E0, 2);
-  tft.text(40, 132, "OPEN 192.168.4.1", 0x07FF, 2);
-  tft.text(40, 160, "WIFI + TICKER + APPS", 0x8410, 1);
-  tft.text(40, 176, "SAVE=APPLY+TAP POWER", 0x8410, 1);
-  tft.text(40, 190, "EXITS W/O SAVING", 0x8410, 1);
+  // Rows are spaced for the AA ink, not the old 8*scale cells: at 20 px the
+  // band is 22 px tall (ink -2..+19 from the anchor) and the 40 px title inks
+  // -5..+38, so the old 22 px row pitch would have overlapped them.
+  tft.textAA(kAATitle, 40, 30, "SETUP", 0xFFFF);      // ink 25..68
+  tft.textAA(kAAMed, 40, 84, "JOIN AP:", 0xFFE0);     // ink 82..103
+  tft.textAA(kAAMed, 40, 110, PORTAL_AP_NAME, 0x07E0);  // ink 108..129
+  tft.textAA(kAAMed, 40, 136, "OPEN 192.168.4.1", 0x07FF);  // ink 134..155
+  tft.textAA(kAASmall, 40, 172, "WIFI + TICKER + APPS", 0x8410);
+  tft.textAA(kAASmall, 40, 188, "SAVE=APPLY+TAP POWER", 0x8410);
+  tft.textAA(kAASmall, 40, 204, "EXITS W/O SAVING", 0x8410);
   drawFooter();
   tft.flush();
 }
@@ -807,8 +824,8 @@ void setup() {
     Serial.println("[militv] POWER down — hold 3s for setup portal...");
     tft.begin();
     tft.fill(0x0000);
-    tft.text(40, 100, "HOLD POWER 3S", 0xFFE0, 2);
-    tft.text(40, 130, "FOR WIFI + APPS", 0xFFE0, 2);
+    tft.textAA(kAAMed, 40, 100, "HOLD POWER 3S", 0xFFE0);
+    tft.textAA(kAAMed, 40, 130, "FOR WIFI + APPS", 0xFFE0);
     setBacklight(255);
     tft.flush();  // loop() has not started yet: nothing else will push this
     uint32_t t0 = millis();
@@ -826,8 +843,8 @@ void setup() {
 
   tft.begin();
   tft.fill(0x0000);
-  tft.text(40, 8, "MILITV", 0xFFFF, 2);
-  tft.text(40, 100, "CONNECTING WIFI", 0xFFE0, 2);
+  tft.textAA(kAAMed, 40, 8, "MILITV", 0xFFFF);
+  tft.textAA(kAAMed, 40, 100, "CONNECTING WIFI", 0xFFE0);
   setBacklight(255);
   tft.flush();
 
@@ -839,10 +856,10 @@ void setup() {
     enterApp(app);
   } else {
     tft.fill(0x0000);
-    tft.text(40, 8, "MILITV", 0xFFFF, 2);
-    tft.text(40, 100, "WIFI FAILED", 0xF800, 2);
-    tft.text(40, 130, "HOLD POWER 3S", 0xFFE0, 2);
-    tft.text(40, 152, "FOR SETUP PORTAL", 0xFFE0, 2);
+    tft.textAA(kAAMed, 40, 8, "MILITV", 0xFFFF);
+    tft.textAA(kAAMed, 40, 100, "WIFI FAILED", 0xF800);
+    tft.textAA(kAAMed, 40, 130, "HOLD POWER 3S", 0xFFE0);
+    tft.textAA(kAAMed, 40, 156, "FOR SETUP PORTAL", 0xFFE0);
     drawFooter();
     tft.flush();
     // Watchdog may still join later; loop() enters the app on the up-edge.

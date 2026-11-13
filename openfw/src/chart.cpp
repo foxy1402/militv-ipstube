@@ -65,7 +65,7 @@ void chartFull() {
   // whole redraw, not a per-segment question.
   uint16_t lc = chartTrendUp() ? CH_LINE_UP : CH_LINE_DN;
   for (int i = 1; i < chart.n; i++)
-    chartTft->line(chartX(i - 1), chartY(chart.v[i - 1]), chartX(i), chartY(chart.v[i]), lc);
+    chartTft->lineAA(chartX(i - 1), chartY(chart.v[i - 1]), chartX(i), chartY(chart.v[i]), lc);
   // Min/max labels: inside the plot's right edge (x CH_X1-46), NOT the
   // left — the bezel covers x<40 and the glued frame covers x>~300, so
   // edge-to-edge labels truncate to "$83,". 46 px fits "$83,122" (42 px).
@@ -117,7 +117,7 @@ void chartPush(float close) {
   }
   int x0 = chartX(chart.n - 2), y0 = chartY(chart.v[chart.n - 2]);
   int x1 = chartX(chart.n - 1), y1 = chartY(chart.v[chart.n - 1]);
-  chartTft->line(x0, y0, x1, y1, chartTrendUp() ? CH_LINE_UP : CH_LINE_DN);
+  chartTft->lineAA(x0, y0, x1, y1, chartTrendUp() ? CH_LINE_UP : CH_LINE_DN);
   // The live dot sits at the newest point; it must move with the segment or
   // the next tick will erase a stale location.
   chart.dotX = x1;
@@ -146,7 +146,7 @@ void chartTick(float price) {
     chartTft->rect(chart.dotX - 1, chart.dotY - 1, 3, 3, CH_BG);
   // Redraw the committed segment the erase may have bitten into, then the dot.
   if (chart.n >= 2)
-    chartTft->line(chartX(chart.n - 2), chartY(chart.v[chart.n - 2]), x, y, lineC);
+    chartTft->lineAA(chartX(chart.n - 2), chartY(chart.v[chart.n - 2]), x, y, lineC);
   chartTft->rect(x - 1, y - 1, 3, 3, liveC);
   chart.dotX = x;
   chart.dotY = y;

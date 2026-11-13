@@ -27,6 +27,7 @@
 #pragma once
 #include <Arduino.h>
 #include <SPI.h>
+#include <math.h>
 #include <esp_heap_caps.h>
 #include "pins.h"
 
@@ -41,6 +42,8 @@ class MiniTFT {
   void wake();
   void pixel(int x, int y, uint16_t color);
   void line(int x0, int y0, int x1, int y1, uint16_t color);
+  void blendPixel(int x, int y, uint16_t color, uint8_t a);  // a: 0..255 coverage
+  void lineAA(int x0, int y0, int x1, int y1, uint16_t color);  // Wu AA line
   void flush();     // push the dirty rect to the panel (no-op when clean)
   void flushAll();  // force a full-screen push
   bool hasFb() const { return fb != nullptr; }
@@ -397,6 +400,78 @@ inline void MiniTFT::line(int x0, int y0, int x1, int y1, uint16_t color) {
       rect(a, y, b - a + 1, 1, color);
       x = nx;
     }
+  }
+}
+
+// Anti-aliased pixel: blend fg over the framebuffer pixel at (x,y).
+// a = 0 (transparent) .. 255 (opaque). In direct (no-FB) mode it degrades
+// to a solid pixel at a >= 128. Blending happens in RAM, so it costs no
+// extra SPI traffic: the dirty rect still pushes once per flush.
+inline void MiniTFT::blendPixel(int x, int y, uint16_t color, uint8_t a) {
+  if (a == 0) return;
+  if (x < 0 || y < 0 || x >= TFT_W || y >= TFT_H) return;
+  if (!fb) {
+    if (a >= 128) pixel(x, y, color);
+    return;
+  }
+  if (a == 255) {
+    fb[(size_t)y * TFT_W + x] = color;
+    markDirty(x, y, x, y);
+    return;
+  }
+  uint16_t bg = fb[(size_t)y * TFT_W + x];
+  uint32_t ia = 255u - a;
+  uint16_t out = (uint16_t)(((((color >> 11) & 0x1F) * a + ((bg >> 11) & 0x1F) * ia) / 255) << 11) |
+                 (uint16_t)(((((color >> 5) & 0x3F) * a + ((bg >> 5) & 0x3F) * ia) / 255) << 5) |
+                 (uint16_t)((((color & 0x1F) * a + (bg & 0x1F) * ia) / 255));
+  fb[(size_t)y * TFT_W + x] = out;
+  markDirty(x, y, x, y);
+}
+
+// Xiaolin Wu anti-aliased line. Same 1px line as line(), but edge pixels
+// are blended at fractional coverage instead of snapped full on/off, so
+// shallow diagonals lose the staircase. ~2 blended pixels per column.
+// Keep line() for grid/frame (crisp 1px rules); use this for the chart.
+inline void MiniTFT::lineAA(int x0, int y0, int x1, int y1, uint16_t color) {
+  auto ipart = [](float v) { return (int)floorf(v); };
+  auto fpart = [](float v) { return v - floorf(v); };
+  auto rfpart = [&](float v) { return 1.0f - fpart(v); };
+  bool steep = abs(y1 - y0) > abs(x1 - x0);
+  if (steep) {
+    int t = x0; x0 = y0; y0 = t;
+    t = x1; x1 = y1; y1 = t;
+  }
+  if (x0 > x1) {
+    int t = x0; x0 = x1; x1 = t;
+    t = y0; y0 = y1; y1 = t;
+  }
+  float dx = (float)(x1 - x0), dy = (float)(y1 - y0);
+  float grad = dx == 0 ? 1.0f : dy / dx;
+  auto plot = [&](int x, int y, float c) {
+    if (c <= 0) return;
+    if (c > 1) c = 1;
+    if (steep) blendPixel(y, x, color, (uint8_t)(c * 255));
+    else blendPixel(x, y, color, (uint8_t)(c * 255));
+  };
+  // First endpoint.
+  float xend = roundf((float)x0), yend = y0 + grad * (xend - x0);
+  float xgap = rfpart((float)x0 + 0.5f);
+  int xpxl1 = (int)xend, ypxl1 = ipart(yend);
+  plot(xpxl1, ypxl1, rfpart(yend) * xgap);
+  plot(xpxl1, ypxl1 + 1, fpart(yend) * xgap);
+  float intery = yend + grad;
+  // Last endpoint.
+  xend = roundf((float)x1);
+  yend = y1 + grad * (xend - x1);
+  xgap = fpart((float)x1 + 0.5f);
+  int xpxl2 = (int)xend, ypxl2 = ipart(yend);
+  plot(xpxl2, ypxl2, rfpart(yend) * xgap);
+  plot(xpxl2, ypxl2 + 1, fpart(yend) * xgap);
+  // Main loop: one column at a time, two blended pixels per column.
+  for (int x = xpxl1 + 1; x <= xpxl2 - 1; x++) {
+    plot(x, ipart(intery), rfpart(intery));
+    plot(x, ipart(intery) + 1, fpart(intery));
+    intery += grad;
   }
 }
 

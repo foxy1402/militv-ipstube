@@ -277,7 +277,7 @@ void stockDraw() {
     auto px = [&](int i) { return X0 + i * (X1 - X0) / (histN - 1); };
     for (int x = X0; x <= X1; x += 4) st->rect(x, (Y0 + Y1) / 2, 2, 1, 0x2104);
     uint16_t lc = (hist[histN - 1] >= hist[0]) ? 0x07E0 : 0xF800;
-    for (int i = 1; i < histN; i++) st->line(px(i - 1), py(hist[i - 1]), px(i), py(hist[i]), lc);
+    for (int i = 1; i < histN; i++) st->lineAA(px(i - 1), py(hist[i - 1]), px(i), py(hist[i]), lc);
     for (int i = 0; i < histN; i++) shownHist[i] = hist[i];
     shownHistN = histN;
   } else if (!haveHist && shownHistN != 0) {

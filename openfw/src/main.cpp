@@ -503,7 +503,7 @@ static void switchApp(int dir) {
 // the exit hint. Called after netPortalStart().
 static void drawPortalScreen() {
   tft.fill(0x0000);
-  tft.text(40, 40, "SETUP", 0xFFFF, 3);
+  tft.textAA28(40, 40, "SETUP", 0xFFFF);
   tft.text(40, 80, "JOIN AP:", 0xFFE0, 2);
   tft.text(40, 102, PORTAL_AP_NAME, 0x07E0, 2);
   tft.text(40, 132, "OPEN 192.168.4.1", 0x07FF, 2);

@@ -31,6 +31,7 @@
 #include <esp_heap_caps.h>
 #include "pins.h"
 #include "roboto_mono_20.h"  // AA atlas generated from Roboto Mono (OFL 1.1)
+#include "roboto_mono_28.h"  // AA atlas, 28px: scale-3 replacement
 
 class MiniTFT {
  public:
@@ -43,6 +44,10 @@ class MiniTFT {
   // cap-height band (where the ink top of 'A' sits), so a scale-2 text()
   // call site keeps the same x and y, and the 12px advance matches scale 2.
   void textAA(int x, int y, const char *s, uint16_t color);
+  // Same as textAA but from the 28px atlas: the scale-3 replacement.
+  // Advance is 17px (vs 18px for scale 3) and cap height ~20px (vs 21px),
+  // so a scale-3 call site keeps the same x and y.
+  void textAA28(int x, int y, const char *s, uint16_t color);
   void sleep();
   void wake();
   void pixel(int x, int y, uint16_t color);
@@ -607,6 +612,36 @@ inline void MiniTFT::textAA(int x, int y, const char *s, uint16_t color) {
     for (int r = 0; r < g.h; r++) {
       for (int c = 0; c < g.w; c++) {
         uint8_t nib = (kRM20Bitmap[g.off + (r * g.w + c) / 2] >> ((c & 1) ? 0 : 4)) & 0xF;
+        if (nib) blendPixel(gx + c, gy + r, color, (uint8_t)(nib * 17));
+      }
+    }
+    cx += g.adv;
+  }
+}
+
+// 28px twin of textAA: same loop, RM28 atlas. Deliberately a copy, not a
+// template — the two atlases have distinct struct types and this keeps the
+// header readable on Arduino. Only the scale-3 SETUP title uses it.
+inline void MiniTFT::textAA28(int x, int y, const char *s, uint16_t color) {
+  int cx = x;
+  while (*s) {
+    char ch = *s++;
+    if (ch >= 'a' && ch <= 'z') ch -= 32;
+    if (ch == '\n') {
+      y += RM28_ASCENT;
+      cx = x;
+      continue;
+    }
+    if (ch < RM28_FIRST || ch >= RM28_FIRST + RM28_COUNT) {
+      cx += 17;
+      continue;
+    }
+    const RM28Glyph &g = kRM28Glyphs[ch - RM28_FIRST];
+    int gy = y + (g.yoff - RM28_CAP_TOP);
+    int gx = cx + g.xoff;
+    for (int r = 0; r < g.h; r++) {
+      for (int c = 0; c < g.w; c++) {
+        uint8_t nib = (kRM28Bitmap[g.off + (r * g.w + c) / 2] >> ((c & 1) ? 0 : 4)) & 0xF;
         if (nib) blendPixel(gx + c, gy + r, color, (uint8_t)(nib * 17));
       }
     }

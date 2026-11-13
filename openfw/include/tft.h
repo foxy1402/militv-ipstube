@@ -30,6 +30,7 @@
 #include <math.h>
 #include <esp_heap_caps.h>
 #include "pins.h"
+#include "roboto_mono_20.h"  // AA atlas generated from Roboto Mono (OFL 1.1)
 
 class MiniTFT {
  public:
@@ -38,6 +39,10 @@ class MiniTFT {
   void fill(uint16_t color);
   void rect(int x, int y, int w, int h, uint16_t color);
   void text(int x, int y, const char *s, uint16_t color, uint8_t scale = 2);
+  // Anti-aliased text from the Roboto Mono 20px atlas. y is the TOP of the
+  // cap-height band (where the ink top of 'A' sits), so a scale-2 text()
+  // call site keeps the same x and y, and the 12px advance matches scale 2.
+  void textAA(int x, int y, const char *s, uint16_t color);
   void sleep();
   void wake();
   void pixel(int x, int y, uint16_t color);
@@ -574,5 +579,37 @@ inline void MiniTFT::text(int x, int y, const char *s, uint16_t color, uint8_t s
       cx += 6 * scale;
     }
     s++;
+  }
+}
+
+// Anti-aliased text: each glyph is a 4-bit-alpha bitmap from the offline
+// Roboto Mono atlas (roboto_mono_20.h), blended over the framebuffer with
+// blendPixel. Same cost model as everything else in this driver: RAM writes
+// only, one dirty-rect push per flush. Unknown chars advance one cell;
+// lowercase is uppercased like text().
+inline void MiniTFT::textAA(int x, int y, const char *s, uint16_t color) {
+  int cx = x;
+  while (*s) {
+    char ch = *s++;
+    if (ch >= 'a' && ch <= 'z') ch -= 32;
+    if (ch == '\n') {
+      y += RM20_ASCENT;
+      cx = x;
+      continue;
+    }
+    if (ch < RM20_FIRST || ch >= RM20_FIRST + RM20_COUNT) {
+      cx += 12;
+      continue;
+    }
+    const RM20Glyph &g = kRM20Glyphs[ch - RM20_FIRST];
+    int gy = y + (g.yoff - RM20_CAP_TOP);
+    int gx = cx + g.xoff;
+    for (int r = 0; r < g.h; r++) {
+      for (int c = 0; c < g.w; c++) {
+        uint8_t nib = (kRM20Bitmap[g.off + (r * g.w + c) / 2] >> ((c & 1) ? 0 : 4)) & 0xF;
+        if (nib) blendPixel(gx + c, gy + r, color, (uint8_t)(nib * 17));
+      }
+    }
+    cx += g.adv;
   }
 }

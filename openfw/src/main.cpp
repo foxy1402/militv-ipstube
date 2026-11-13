@@ -102,7 +102,7 @@ static void drawHeader() {
   if (strcmp(shownCryptoSym, sym) != 0) {
     // Symbol slot (x40, scale 2): clear + rewrite only on ticker change.
     tft.rect(40, 0, 48, 32, 0x0000);
-    tft.text(40, 8, sym, 0xFFFF, 2);
+    tft.textAA(40, 8, sym, 0xFFFF);
     strncpy(shownCryptoSym, sym, sizeof(shownCryptoSym) - 1);
     tft.flush();
   }
@@ -115,7 +115,7 @@ static void drawPriceField(int x, int clearW, const char *s, uint16_t color, cha
                            uint16_t *shownColor) {
   if (strcmp(shown, s) == 0 && *shownColor == color) return;
   tft.rect(x, 4, clearW, 24, 0x0000);
-  tft.text(x, 8, s, color, 2);
+  tft.textAA(x, 8, s, color);
   strncpy(shown, s, 19);
   shown[19] = 0;
   *shownColor = color;
